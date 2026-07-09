@@ -17,10 +17,74 @@ function General(props) {
     const { profile } = props;
     const { theme, setTheme } = useTheme();
     const [mounted, setMounted] = useState(false);
+    const [appInfo, setAppInfo] = useState(null);
+    const [updateButton, setUpdateButton] = useState({
+        state: "idle",
+        label: "Check for updates",
+    });
 
     useEffect(() => {
         setMounted(true);
     }, []);
+
+    useEffect(() => {
+        let isMounted = true;
+
+        async function loadAppInfo() {
+            if (!window?.electron?.getAppInfo) {
+                return;
+            }
+
+            try {
+                const info = await window.electron.getAppInfo();
+
+                if (isMounted) {
+                    setAppInfo(info);
+                    if (info?.updateStatus) {
+                        setUpdateButton(info.updateStatus);
+                    }
+                }
+            } catch (error) {
+                return;
+            }
+        }
+
+        loadAppInfo();
+
+        let unsubscribe;
+
+        if (window?.electron?.onUpdateStatus) {
+            unsubscribe = window.electron.onUpdateStatus((status) => {
+                if (isMounted && status) {
+                    setUpdateButton(status);
+                }
+            });
+        }
+
+        return () => {
+            isMounted = false;
+            unsubscribe?.();
+        };
+    }, []);
+
+    async function handleCheckForUpdates() {
+        if (!window?.electron?.checkForUpdates) {
+            return;
+        }
+
+        try {
+            const result = await window.electron.checkForUpdates();
+
+            if (result) {
+                setUpdateButton(result);
+            }
+        } catch (error) {
+            setUpdateButton({
+                state: "error",
+                label: "Update error",
+            });
+        }
+    }
 
     return <Layout title="Settings">
         <div className="flex flex-col gap-4 sm:max-w-[900px] w-full m-auto">
@@ -58,12 +122,22 @@ function General(props) {
                 </div>
                 <div className="flex flex-row justify-between items-center">
                     <div className="flex flex-col gap-1">
-                        <h3 className="font-semibold text-sm">Version</h3>
-                        <p className="font-semibold text-xs text-neutral-500">Current version of the application.</p>
+                        <div className="flex flex-row gap-3 items-center">
+                            <h3 className="font-semibold text-sm items-center">Version</h3>
+                            <span className="font-semibold text-xs text-neutral-500">{appInfo?.version || `No info`}</span>
+                        </div>
+                        <p className="font-semibold text-xs text-neutral-500">
+                            Current version of the application.
+                        </p>
                     </div>
-                    <div>
-                        <Button className="rounded-lg h-7 !font-semibold !text-xs border bg-white hover:bg-neutral-50 text-black dark:text-white dark:bg-neutral-800 dark:border-neutral-700">
-                            Up to Date
+                    <div className="flex items-center gap-2">
+                        <Button
+                            type="button"
+                            onClick={handleCheckForUpdates}
+                            disabled={["checking", "downloading"].includes(updateButton.state)}
+                            className="rounded-lg h-7 !font-semibold !text-xs border bg-white hover:bg-neutral-50 text-black dark:text-white dark:bg-neutral-800 dark:border-neutral-700"
+                        >
+                            {updateButton.label}
                         </Button>
                     </div>
                 </div>
