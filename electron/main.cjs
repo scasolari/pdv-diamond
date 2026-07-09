@@ -1,18 +1,21 @@
 const { app, BrowserWindow, dialog, ipcMain, nativeTheme, session } = require("electron");
+const { autoUpdater } = require("electron-updater");
 const path = require("path");
-const { spawn } = require("child_process");
 const net = require("net");
 const fs = require("fs");
 
-const port = Number(process.env.PORT || 3000);
-const devServerUrl = process.env.ELECTRON_URL || `http://localhost:${port}`;
+const defaultPort = Number(process.env.PORT || 3000);
+const devServerUrl = process.env.ELECTRON_URL || `http://localhost:${defaultPort}`;
 const appEntryUrl = `${devServerUrl.replace(/\/$/, "")}/app/dashboard`;
 const isDev = process.env.NODE_ENV === "development";
 const electronSessionPartition = "persist:placedv-desktop";
 
 let mainWindow;
-let nextServerProcess;
 let isQuitting = false;
+let updateStatus = {
+  state: "idle",
+  label: "Check for updates",
+};
 
 function getWindowBackgroundColor(resolvedTheme) {
   return resolvedTheme === "dark" ? "#1c1c1e" : "#ffffff";
@@ -55,6 +58,93 @@ function waitForPort(portToCheck, host = "127.0.0.1", timeoutMs = 30000) {
   });
 }
 
+function getAvailablePort(preferredPort) {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+
+    server.once("error", (error) => {
+      server.close();
+
+      if (error.code === "EADDRINUSE") {
+        const fallbackServer = net.createServer();
+
+        fallbackServer.once("error", reject);
+        fallbackServer.listen(0, "127.0.0.1", () => {
+          const address = fallbackServer.address();
+          const freePort = typeof address === "object" && address ? address.port : preferredPort;
+
+          fallbackServer.close(() => resolve(freePort));
+        });
+        return;
+      }
+
+      reject(error);
+    });
+
+    server.listen(preferredPort, "127.0.0.1", () => {
+      const address = server.address();
+      const freePort = typeof address === "object" && address ? address.port : preferredPort;
+
+      server.close(() => resolve(freePort));
+    });
+  });
+}
+
+function broadcastUpdateStatus(nextStatus) {
+  updateStatus = nextStatus;
+
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send("app:update-status", updateStatus);
+  }
+}
+
+function configureAutoUpdater() {
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+
+  autoUpdater.on("checking-for-update", () => {
+    broadcastUpdateStatus({
+      state: "checking",
+      label: "Checking...",
+    });
+  });
+
+  autoUpdater.on("update-available", () => {
+    broadcastUpdateStatus({
+      state: "downloading",
+      label: "Downloading...",
+    });
+  });
+
+  autoUpdater.on("update-not-available", () => {
+    broadcastUpdateStatus({
+      state: "up-to-date",
+      label: "Up to date",
+    });
+  });
+
+  autoUpdater.on("download-progress", () => {
+    broadcastUpdateStatus({
+      state: "downloading",
+      label: "Downloading...",
+    });
+  });
+
+  autoUpdater.on("update-downloaded", () => {
+    broadcastUpdateStatus({
+      state: "downloaded",
+      label: "Restart to update",
+    });
+  });
+
+  autoUpdater.on("error", () => {
+    broadcastUpdateStatus({
+      state: "error",
+      label: "Update error",
+    });
+  });
+}
+
 function createWindow() {
     mainWindow = new BrowserWindow({
         width: 1100,
@@ -82,11 +172,68 @@ function createWindow() {
   });
 }
 
+function getProductionServerPaths() {
+  const standaloneDir = path.join(process.resourcesPath, "app-standalone");
+
+  return {
+    standaloneDir,
+    serverEntry: path.join(standaloneDir, "server.js"),
+  };
+}
+
+async function startStandaloneServer(serverEntry, standaloneDir, serverPort) {
+  process.env.NODE_ENV = "production";
+  process.env.PORT = String(serverPort);
+  process.env.HOSTNAME = "127.0.0.1";
+  process.chdir(standaloneDir);
+
+  require(serverEntry);
+}
+
 ipcMain.on("theme:sync", (_event, payload) => {
   syncWindowChromeTheme(payload?.theme, payload?.resolvedTheme);
 });
 
+ipcMain.handle("app:get-info", () => {
+  return {
+    version: app.getVersion(),
+    updateStatus,
+  };
+});
+
+ipcMain.handle("app:check-for-updates", async () => {
+  if (!app.isPackaged) {
+    broadcastUpdateStatus({
+      state: "idle",
+      label: "Updates disabled in dev",
+    });
+
+    return updateStatus;
+  }
+
+  try {
+    if (updateStatus.state === "downloaded") {
+      setImmediate(() => {
+        autoUpdater.quitAndInstall();
+      });
+
+      return updateStatus;
+    }
+
+    await autoUpdater.checkForUpdates();
+    return updateStatus;
+  } catch (error) {
+    broadcastUpdateStatus({
+      state: "error",
+      label: "Update error",
+    });
+
+    return updateStatus;
+  }
+});
+
 async function loadApp() {
+  configureAutoUpdater();
   createWindow();
 
   if (isDev) {
@@ -94,47 +241,22 @@ async function loadApp() {
     return;
   }
 
-  const nextBin = path.join(
-    app.getAppPath(),
-    "node_modules",
-    "next",
-    "dist",
-    "bin",
-    "next"
-  );
-  const buildDir = path.join(app.getAppPath(), ".next");
+  const { standaloneDir, serverEntry } = getProductionServerPaths();
+  const serverPort = await getAvailablePort(defaultPort);
 
-  if (!fs.existsSync(buildDir)) {
+  if (!fs.existsSync(serverEntry)) {
     await dialog.showErrorBox(
       "Build mancante",
-      "Esegui `npm run build` prima di avviare l'app Electron in modalita produzione."
+      "Build standalone mancante. Rigenera la build Electron dopo `npm run build`."
     );
     app.quit();
     return;
   }
 
-  nextServerProcess = spawn(
-    process.execPath,
-    [nextBin, "start", "-p", String(port)],
-    {
-      cwd: app.getAppPath(),
-      env: { ...process.env, NODE_ENV: "production" },
-      stdio: "inherit",
-    }
-  );
+  await startStandaloneServer(serverEntry, standaloneDir, serverPort);
 
-  nextServerProcess.on("exit", (code) => {
-    if (!app.isQuitting && code !== 0) {
-      dialog.showErrorBox(
-        "Next.js terminato",
-        `Il server Next.js si e chiuso con codice ${code ?? "sconosciuto"}.`
-      );
-      app.quit();
-    }
-  });
-
-  await waitForPort(port);
-  await mainWindow.loadURL(`http://localhost:${port}/app/dashboard`);
+  await waitForPort(serverPort);
+  await mainWindow.loadURL(`http://127.0.0.1:${serverPort}/app/dashboard`);
 }
 
 app.on("before-quit", async (event) => {
@@ -150,10 +272,6 @@ app.on("before-quit", async (event) => {
     await session.fromPartition(electronSessionPartition).flushStorageData();
   } catch (error) {
     console.error("Failed to flush Electron storage:", error);
-  }
-
-  if (nextServerProcess && !nextServerProcess.killed) {
-    nextServerProcess.kill();
   }
 
   app.quit();
