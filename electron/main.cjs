@@ -167,6 +167,18 @@ function createWindow() {
         },
     });
 
+    mainWindow.webContents.setVisualZoomLevelLimits(1, 1);
+    mainWindow.webContents.setZoomFactor(1);
+    mainWindow.webContents.on("before-input-event", (event, input) => {
+      const isZoomShortcut =
+        (input.meta || input.control) &&
+        ["+", "-", "0"].includes(input.key);
+
+      if (isZoomShortcut) {
+        event.preventDefault();
+      }
+    });
+
     mainWindow.on("closed", () => {
     mainWindow = null;
   });
