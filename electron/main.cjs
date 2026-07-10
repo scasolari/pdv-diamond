@@ -9,6 +9,7 @@ const devServerUrl = process.env.ELECTRON_URL || `http://localhost:${defaultPort
 const appEntryUrl = `${devServerUrl.replace(/\/$/, "")}/app/dashboard`;
 const isDev = process.env.NODE_ENV === "development";
 const electronSessionPartition = "persist:placedv-desktop";
+const desktopAppName = "Placedv AI";
 
 let mainWindow;
 let isQuitting = false;
@@ -16,6 +17,9 @@ let updateStatus = {
   state: "idle",
   label: "Check for updates",
 };
+
+app.setName(desktopAppName);
+process.title = desktopAppName;
 
 function getUpdateErrorStatus(error) {
   const message = String(error?.message || error || "").toLowerCase();
@@ -258,6 +262,8 @@ async function startStandaloneServer(serverEntry, standaloneDir, serverPort) {
   process.chdir(standaloneDir);
 
   require(serverEntry);
+  app.setName(desktopAppName);
+  process.title = desktopAppName;
 }
 
 ipcMain.on("theme:sync", (_event, payload) => {
