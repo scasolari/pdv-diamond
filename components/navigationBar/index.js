@@ -32,7 +32,7 @@ function NavigationBar(props) {
                 style={{ WebkitAppRegion: "drag" }}
             >
                 <Link href="/app/dashboard" className="absolute font-semibold text-sm w-fit z-50">
-                    Placedv AI
+                    Placedv
                 </Link>
             </div>
             {linkActive("/app/dashboard")
