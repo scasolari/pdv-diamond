@@ -4,6 +4,7 @@ const path = require("path");
 module.exports = {
   appId: "com.placedv.ai",
   productName: "Placedv AI",
+  artifactName: "Placedv-AI-${version}-${arch}.${ext}",
   files: [
     "electron/**/*",
     "package.json",
