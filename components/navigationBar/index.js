@@ -31,9 +31,9 @@ function NavigationBar(props) {
                 className="pl-[90px] flex items-center h-11 px-6 w-full"
                 style={{ WebkitAppRegion: "drag" }}
             >
-                <span className="font-semibold text-sm">
+                <Link href="/app/dashboard" className="absolute font-semibold text-sm w-fit z-50">
                     Placedv AI
-                </span>
+                </Link>
             </div>
             {linkActive("/app/dashboard")
                 ? <div className="flex flex-col gap-2 justify-between h-[calc(100vh-45px)]">
