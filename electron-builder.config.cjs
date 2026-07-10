@@ -17,7 +17,10 @@ module.exports = {
       "dmg",
       "zip",
     ],
-    identity: "-",
+    hardenedRuntime: true,
+    gatekeeperAssess: false,
+    entitlements: "build/entitlements.mac.plist",
+    entitlementsInherit: "build/entitlements.mac.plist",
   },
   afterPack: async (context) => {
     const projectDir = context.projectDir || context.packager?.projectDir;
