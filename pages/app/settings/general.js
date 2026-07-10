@@ -81,7 +81,7 @@ function General(props) {
         } catch (error) {
             setUpdateButton({
                 state: "error",
-                label: "Update error",
+                label: "Check failed",
             });
         }
     }
