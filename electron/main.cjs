@@ -17,6 +17,59 @@ let updateStatus = {
   label: "Check for updates",
 };
 
+function getUpdateErrorStatus(error) {
+  const message = String(error?.message || error || "").toLowerCase();
+  const stack = String(error?.stack || "").toLowerCase();
+  const fullText = `${message}\n${stack}`;
+
+  if (message.includes("status code 404") || message.includes("404")) {
+    return {
+      state: "error",
+      label: "GitHub 404",
+    };
+  }
+
+  if (message.includes("status code 401") || message.includes("401") || message.includes("status code 403") || message.includes("403")) {
+    return {
+      state: "error",
+      label: "GitHub auth",
+    };
+  }
+
+  if (message.includes("no published versions") || message.includes("no valid update available")) {
+    return {
+      state: "up-to-date",
+      label: "No update",
+    };
+  }
+
+  if (fullText.includes("code signature") || fullText.includes("signature") || fullText.includes("signed")) {
+    return {
+      state: "error",
+      label: "Signature error",
+    };
+  }
+
+  if (message.includes("net::err_internet_disconnected") || message.includes("network") || message.includes("socket") || message.includes("timeout")) {
+    return {
+      state: "error",
+      label: "Network error",
+    };
+  }
+
+  if (message.includes("yaml")) {
+    return {
+      state: "error",
+      label: "Metadata error",
+    };
+  }
+
+  return {
+    state: "error",
+    label: "Update error",
+  };
+}
+
 function getWindowBackgroundColor(resolvedTheme) {
   return resolvedTheme === "dark" ? "#1c1c1e" : "#ffffff";
 }
@@ -137,11 +190,16 @@ function configureAutoUpdater() {
     });
   });
 
-  autoUpdater.on("error", () => {
-    broadcastUpdateStatus({
-      state: "error",
-      label: "Update error",
+  autoUpdater.on("error", (error) => {
+    console.error("Electron autoUpdater error:", {
+      message: error?.message,
+      stack: error?.stack,
+      code: error?.code,
+      statusCode: error?.statusCode,
+      name: error?.name,
     });
+
+    broadcastUpdateStatus(getUpdateErrorStatus(error));
   });
 }
 
@@ -235,10 +293,15 @@ ipcMain.handle("app:check-for-updates", async () => {
     await autoUpdater.checkForUpdates();
     return updateStatus;
   } catch (error) {
-    broadcastUpdateStatus({
-      state: "error",
-      label: "Update error",
+    console.error("Electron checkForUpdates failed:", {
+      message: error?.message,
+      stack: error?.stack,
+      code: error?.code,
+      statusCode: error?.statusCode,
+      name: error?.name,
     });
+
+    broadcastUpdateStatus(getUpdateErrorStatus(error));
 
     return updateStatus;
   }
