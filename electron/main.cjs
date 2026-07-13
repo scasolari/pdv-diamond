@@ -19,6 +19,7 @@ let isUpdateCheckInProgress = false;
 let updateStatus = {
   state: "idle",
   label: "Check for updates",
+  progress: null,
 };
 
 app.setName(desktopAppName);
@@ -151,7 +152,10 @@ function getAvailablePort(preferredPort) {
 }
 
 function broadcastUpdateStatus(nextStatus) {
-  updateStatus = nextStatus;
+  updateStatus = {
+    ...updateStatus,
+    ...nextStatus,
+  };
 
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send("app:update-status", updateStatus);
@@ -166,6 +170,7 @@ function configureAutoUpdater() {
     broadcastUpdateStatus({
       state: "checking",
       label: "Checking...",
+      progress: null,
     });
   });
 
@@ -173,6 +178,7 @@ function configureAutoUpdater() {
     broadcastUpdateStatus({
       state: "available",
       label: "New version available",
+      progress: null,
     });
   });
 
@@ -180,13 +186,17 @@ function configureAutoUpdater() {
     broadcastUpdateStatus({
       state: "up-to-date",
       label: "Up to date",
+      progress: null,
     });
   });
 
-  autoUpdater.on("download-progress", () => {
+  autoUpdater.on("download-progress", (progress) => {
+    const percent = Math.max(0, Math.min(100, Math.round(progress?.percent ?? 0)));
+
     broadcastUpdateStatus({
       state: "downloading",
-      label: "Downloading...",
+      label: `Downloading ${percent}%`,
+      progress: percent,
     });
   });
 
@@ -194,6 +204,7 @@ function configureAutoUpdater() {
     broadcastUpdateStatus({
       state: "downloaded",
       label: "Restart to update",
+      progress: 100,
     });
   });
 
@@ -215,6 +226,7 @@ async function runUpdateCheck({ manual = false } = {}) {
     broadcastUpdateStatus({
       state: "idle",
       label: "Updates disabled in dev",
+      progress: null,
     });
 
     return updateStatus;
@@ -232,6 +244,7 @@ async function runUpdateCheck({ manual = false } = {}) {
     broadcastUpdateStatus({
       state: "downloading",
       label: "Downloading...",
+      progress: 0,
     });
 
     try {
