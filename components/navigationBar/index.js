@@ -4,7 +4,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
 import { useSession } from "next-auth/react";
 import { setProfile } from "@/redux/actions/main";
 import { connect } from "react-redux";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import useLogout from "@/lib/logout";
 import Avatar, { genConfig } from "react-nice-avatar";
 
@@ -14,14 +14,56 @@ function NavigationBar(props) {
     const router = useRouter();
     const logout = useLogout();
     const config = genConfig(profile?.user?.email);
+    const [updateStatus, setUpdateStatus] = useState({
+        state: "idle",
+        label: "Check for updates",
+    });
 
     const linkActive = (path) => {
         return router.pathname === path;
     };
 
+    const shouldShowUpdateEntry = ["available", "downloading", "downloaded"].includes(updateStatus.state);
+
     useEffect(() => {
         setProfile(session);
     }, [session, setProfile]);
+
+    useEffect(() => {
+        let isMounted = true;
+        let unsubscribe;
+
+        async function loadUpdateStatus() {
+            if (!window?.electron?.getAppInfo) {
+                return;
+            }
+
+            try {
+                const info = await window.electron.getAppInfo();
+
+                if (isMounted && info?.updateStatus) {
+                    setUpdateStatus(info.updateStatus);
+                }
+            } catch (error) {
+                return;
+            }
+        }
+
+        loadUpdateStatus();
+
+        if (window?.electron?.onUpdateStatus) {
+            unsubscribe = window.electron.onUpdateStatus((status) => {
+                if (isMounted && status) {
+                    setUpdateStatus(status);
+                }
+            });
+        }
+
+        return () => {
+            isMounted = false;
+            unsubscribe?.();
+        };
+    }, []);
 
     if(!session) return null;
 
@@ -49,6 +91,17 @@ function NavigationBar(props) {
                         </li>
                     </ul>
                     <ul className="p-3 grid gap-1">
+                        {shouldShowUpdateEntry ? (
+                            <li>
+                                <Link
+                                    href="/app/settings/general"
+                                    className="font-semibold text-xs flex items-center gap-3 p-1.5 px-2 text-blue-500 bg-blue-50 hover:bg-blue-100 dark:hover:bg-neutral-800 rounded-lg"
+                                >
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-download-icon lucide-download"><path d="M12 15V3"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/></svg>
+                                    {updateStatus.state === "downloaded" ? "Restart to update" : "New version available"}
+                                </Link>
+                            </li>
+                        ) : null}
                         <li>
                             <Link
                                 href="/app/settings/general"
