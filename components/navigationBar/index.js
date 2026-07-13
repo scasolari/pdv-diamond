@@ -17,6 +17,7 @@ function NavigationBar(props) {
     const [updateStatus, setUpdateStatus] = useState({
         state: "idle",
         label: "Check for updates",
+        progress: null,
     });
 
     const linkActive = (path) => {
@@ -112,10 +113,14 @@ function NavigationBar(props) {
                                 <button
                                     type="button"
                                     onClick={handleUpdateEntryClick}
-                                    className="font-semibold text-xs flex items-center gap-3 p-1.5 px-2 text-blue-500 bg-blue-50 hover:bg-blue-100 dark:hover:bg-neutral-800 rounded-lg"
+                                    className="w-full font-semibold text-xs flex items-center gap-3 p-1.5 px-2 text-blue-500 bg-blue-50 hover:bg-blue-100 dark:hover:bg-neutral-800 rounded-lg"
                                 >
                                     <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-download-icon lucide-download"><path d="M12 15V3"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/></svg>
-                                    {updateStatus.state === "downloaded" ? "Restart to update" : "New version available"}
+                                    {updateStatus.state === "downloaded"
+                                        ? "Restart to update"
+                                        : updateStatus.state === "downloading"
+                                            ? updateStatus.label
+                                            : "New version available"}
                                 </button>
                             </li>
                         ) : null}
