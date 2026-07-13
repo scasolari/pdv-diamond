@@ -10,7 +10,7 @@ const appEntryUrl = `${devServerUrl.replace(/\/$/, "")}/app/dashboard`;
 const isDev = process.env.NODE_ENV === "development";
 const electronSessionPartition = "persist:placedv-desktop";
 const desktopAppName = "Placedv AI";
-const updateCheckIntervalMs = 30 * 60 * 1000;
+const updateCheckIntervalMs = 5 * 60 * 1000;
 
 let mainWindow;
 let isQuitting = false;
@@ -159,7 +159,7 @@ function broadcastUpdateStatus(nextStatus) {
 }
 
 function configureAutoUpdater() {
-  autoUpdater.autoDownload = true;
+  autoUpdater.autoDownload = false;
   autoUpdater.autoInstallOnAppQuit = true;
 
   autoUpdater.on("checking-for-update", () => {
@@ -226,6 +226,29 @@ async function runUpdateCheck({ manual = false } = {}) {
     });
 
     return updateStatus;
+  }
+
+  if (updateStatus.state === "available" && manual) {
+    broadcastUpdateStatus({
+      state: "downloading",
+      label: "Downloading...",
+    });
+
+    try {
+      await autoUpdater.downloadUpdate();
+      return updateStatus;
+    } catch (error) {
+      console.error("Electron downloadUpdate failed:", {
+        message: error?.message,
+        stack: error?.stack,
+        code: error?.code,
+        statusCode: error?.statusCode,
+        name: error?.name,
+      });
+
+      broadcastUpdateStatus(getUpdateErrorStatus(error));
+      return updateStatus;
+    }
   }
 
   if (isUpdateCheckInProgress || ["checking", "downloading"].includes(updateStatus.state)) {
