@@ -10,9 +10,12 @@ const appEntryUrl = `${devServerUrl.replace(/\/$/, "")}/app/dashboard`;
 const isDev = process.env.NODE_ENV === "development";
 const electronSessionPartition = "persist:placedv-desktop";
 const desktopAppName = "Placedv AI";
+const updateCheckIntervalMs = 30 * 60 * 1000;
 
 let mainWindow;
 let isQuitting = false;
+let updateCheckInterval;
+let isUpdateCheckInProgress = false;
 let updateStatus = {
   state: "idle",
   label: "Check for updates",
@@ -168,8 +171,8 @@ function configureAutoUpdater() {
 
   autoUpdater.on("update-available", () => {
     broadcastUpdateStatus({
-      state: "downloading",
-      label: "Downloading...",
+      state: "available",
+      label: "New version available",
     });
   });
 
@@ -205,6 +208,68 @@ function configureAutoUpdater() {
 
     broadcastUpdateStatus(getUpdateErrorStatus(error));
   });
+}
+
+async function runUpdateCheck({ manual = false } = {}) {
+  if (!app.isPackaged) {
+    broadcastUpdateStatus({
+      state: "idle",
+      label: "Updates disabled in dev",
+    });
+
+    return updateStatus;
+  }
+
+  if (updateStatus.state === "downloaded" && manual) {
+    setImmediate(() => {
+      autoUpdater.quitAndInstall();
+    });
+
+    return updateStatus;
+  }
+
+  if (isUpdateCheckInProgress || ["checking", "downloading"].includes(updateStatus.state)) {
+    return updateStatus;
+  }
+
+  isUpdateCheckInProgress = true;
+
+  try {
+    await autoUpdater.checkForUpdates();
+    return updateStatus;
+  } catch (error) {
+    console.error("Electron checkForUpdates failed:", {
+      message: error?.message,
+      stack: error?.stack,
+      code: error?.code,
+      statusCode: error?.statusCode,
+      name: error?.name,
+    });
+
+    broadcastUpdateStatus(getUpdateErrorStatus(error));
+
+    return updateStatus;
+  } finally {
+    isUpdateCheckInProgress = false;
+  }
+}
+
+function scheduleAutoUpdateChecks() {
+  if (!app.isPackaged) {
+    return;
+  }
+
+  runUpdateCheck().catch(() => {});
+
+  if (updateCheckInterval) {
+    clearInterval(updateCheckInterval);
+  }
+
+  updateCheckInterval = setInterval(() => {
+    if (!isQuitting) {
+      runUpdateCheck().catch(() => {});
+    }
+  }, updateCheckIntervalMs);
 }
 
 function createWindow() {
@@ -278,39 +343,7 @@ ipcMain.handle("app:get-info", () => {
 });
 
 ipcMain.handle("app:check-for-updates", async () => {
-  if (!app.isPackaged) {
-    broadcastUpdateStatus({
-      state: "idle",
-      label: "Updates disabled in dev",
-    });
-
-    return updateStatus;
-  }
-
-  try {
-    if (updateStatus.state === "downloaded") {
-      setImmediate(() => {
-        autoUpdater.quitAndInstall();
-      });
-
-      return updateStatus;
-    }
-
-    await autoUpdater.checkForUpdates();
-    return updateStatus;
-  } catch (error) {
-    console.error("Electron checkForUpdates failed:", {
-      message: error?.message,
-      stack: error?.stack,
-      code: error?.code,
-      statusCode: error?.statusCode,
-      name: error?.name,
-    });
-
-    broadcastUpdateStatus(getUpdateErrorStatus(error));
-
-    return updateStatus;
-  }
+  return runUpdateCheck({ manual: true });
 });
 
 async function loadApp() {
@@ -338,6 +371,7 @@ async function loadApp() {
 
   await waitForPort(serverPort);
   await mainWindow.loadURL(`http://127.0.0.1:${serverPort}/app/dashboard`);
+  scheduleAutoUpdateChecks();
 }
 
 app.on("before-quit", async (event) => {
