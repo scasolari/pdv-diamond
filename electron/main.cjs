@@ -336,11 +336,28 @@ function createWindow() {
       const isZoomShortcut =
         (input.meta || input.control) &&
         ["+", "-", "0"].includes(input.key);
+      const normalizedKey = String(input.key || "").toLowerCase();
+      const isDevToolsShortcut =
+        input.key === "F12" ||
+        ((input.meta || input.control) && input.alt && normalizedKey === "i") ||
+        ((input.meta || input.control) && input.shift && normalizedKey === "i") ||
+        ((input.meta || input.control) && input.alt && normalizedKey === "j") ||
+        ((input.meta || input.control) && input.shift && normalizedKey === "j");
 
       if (isZoomShortcut) {
         event.preventDefault();
       }
+
+      if (!isDev && isDevToolsShortcut) {
+        event.preventDefault();
+      }
     });
+
+    if (!isDev) {
+      mainWindow.webContents.on("devtools-opened", () => {
+        mainWindow.webContents.closeDevTools();
+      });
+    }
 
     mainWindow.on("closed", () => {
     mainWindow = null;
