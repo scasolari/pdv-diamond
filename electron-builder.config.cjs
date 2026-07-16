@@ -45,6 +45,8 @@ module.exports = {
     const staticTarget = path.join(standaloneTarget, ".next", "static");
     const publicSource = path.join(projectDir, "public");
     const publicTarget = path.join(standaloneTarget, "public");
+    const envSource = path.join(projectDir, ".env");
+    const envTarget = path.join(appBundlePath, ".env");
 
     fs.rmSync(standaloneTarget, { recursive: true, force: true });
     fs.mkdirSync(path.dirname(staticTarget), { recursive: true });
@@ -53,6 +55,10 @@ module.exports = {
 
     if (fs.existsSync(publicSource)) {
       fs.cpSync(publicSource, publicTarget, { recursive: true });
+    }
+
+    if (fs.existsSync(envSource)) {
+      fs.cpSync(envSource, envTarget);
     }
   },
 };
