@@ -2,9 +2,8 @@ import NextAuth from "next-auth";
 import FacebookProvider from "next-auth/providers/facebook";
 import Github from "next-auth/providers/github";
 import { PrismaAdapter } from "@next-auth/prisma-adapter";
-import { PrismaClient } from "@prisma/client";
+import prisma from "@/lib/db";
 
-const prisma = new PrismaClient();
 const sessionMaxAge = 30 * 24 * 60 * 60;
 const useSecureCookies = process.env.NEXTAUTH_URL?.startsWith("https://") ?? false;
 

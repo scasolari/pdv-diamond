@@ -5,6 +5,7 @@ module.exports = {
   appId: "com.placedv.ai",
   productName: "Placedv AI",
   artifactName: "Placedv-AI-${version}-${arch}.${ext}",
+  icon: "build/icon.icns",
   files: [
     "electron/**/*",
     "package.json",
@@ -17,10 +18,14 @@ module.exports = {
       "dmg",
       "zip",
     ],
+    icon: "build/icon.icns",
     hardenedRuntime: true,
     gatekeeperAssess: false,
     entitlements: "build/entitlements.mac.plist",
     entitlementsInherit: "build/entitlements.mac.plist",
+  },
+  win: {
+    icon: "build/icon.ico",
   },
   afterPack: async (context) => {
     const projectDir = context.projectDir || context.packager?.projectDir;

@@ -12,6 +12,7 @@ function Layout({ children, title, sidebarWidth, setSidebarWidth }) {
     const containerRef = useRef(null);
     const panelGroupRef = useRef(null);
     const [groupWidth, setGroupWidth] = useState(0);
+    const hasLoadedSidebarWidth = useRef(false);
 
     useEffect(() => {
         const updateWidth = () => {
@@ -41,6 +42,50 @@ function Layout({ children, title, sidebarWidth, setSidebarWidth }) {
     }, [groupWidth]);
 
     useEffect(() => {
+        let cancelled = false;
+
+        async function loadSidebarWidth() {
+            try {
+                const response = await fetch("/api/app-settings/sidebarWidth");
+                const result = await response.json();
+                const savedWidth = Number(result?.value);
+
+                if (!cancelled && Number.isFinite(savedWidth)) {
+                    setSidebarWidth(savedWidth);
+                }
+            } catch (error) {
+                return;
+            } finally {
+                if (!cancelled) {
+                    hasLoadedSidebarWidth.current = true;
+                }
+            }
+        }
+
+        loadSidebarWidth();
+
+        return () => {
+            cancelled = true;
+        };
+    }, [setSidebarWidth]);
+
+    useEffect(() => {
+        if (!hasLoadedSidebarWidth.current) {
+            return;
+        }
+
+        fetch("/api/app-settings/sidebarWidth", {
+            method: "PUT",
+            headers: {
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+                value: sidebarWidth,
+            }),
+        }).catch(() => {});
+    }, [sidebarWidth]);
+
+    useEffect(() => {
         if (!groupWidth || !panelGroupRef.current) {
             return;
         }
@@ -67,21 +112,21 @@ function Layout({ children, title, sidebarWidth, setSidebarWidth }) {
         }
     };
 
-    return <div ref={containerRef} className="min-h-screen">
-        <ResizablePanelGroup ref={panelGroupRef} direction="horizontal" className="min-h-screen" onLayout={handleLayout}>
+    return <div ref={containerRef} className="h-screen overflow-hidden">
+        <ResizablePanelGroup ref={panelGroupRef} direction="horizontal" className="h-screen overflow-hidden" onLayout={handleLayout}>
             <ResizablePanel defaultSize={18} minSize={minSidebarSize} maxSize={maxSidebarSize} className="min-w-[240px] max-w-[600px]">
                 <NavigationBar title={title}/>
             </ResizablePanel>
             <ResizableHandle />
-            <ResizablePanel defaultSize={82} className="min-w-0">
-                <div className="min-w-0 flex-1">
+            <ResizablePanel defaultSize={82} className="min-w-0 overflow-hidden">
+                <div className="flex h-full min-w-0 flex-1 flex-col overflow-hidden">
                     <div
-                        className="px-6 flex items-center h-11 w-full border-b"
+                        className="px-6 flex h-11 w-full shrink-0 items-center border-b bg-transparent backdrop-blur-md"
                         style={{ WebkitAppRegion: "drag" }}
                     >
                         <span className="font-semibold text-sm">{title}</span>
                     </div>
-                    <div className="p-6 w-full">
+                    <div className="min-h-0 flex-1 overflow-y-auto p-6 w-full">
                         {children}
                     </div>
                 </div>

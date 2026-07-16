@@ -13,3 +13,17 @@ export const setSidebarWidth = (width) => dispatch => {
         payload: width
     });
 };
+
+export const addSavedDevice = (device) => dispatch => {
+    dispatch({
+        type: t.ADD_SAVED_DEVICE,
+        payload: device
+    });
+};
+
+export const setSavedDevices = (devices) => dispatch => {
+    dispatch({
+        type: t.SET_SAVED_DEVICES,
+        payload: devices
+    });
+};
