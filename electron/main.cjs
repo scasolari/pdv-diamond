@@ -101,6 +101,72 @@ function toPrismaSqliteUrl(filePath) {
   return `file:${filePath.split(path.sep).join("/")}`;
 }
 
+function getLocalDatabasePath() {
+  return path.join(app.getPath("userData"), "placedv-local.db");
+}
+
+function getBundledDatabaseTemplatePath() {
+  return path.join(process.resourcesPath, "placedv-local-template.db");
+}
+
+function copyBundledDatabaseTemplate(targetPath) {
+  const templatePath = getBundledDatabaseTemplatePath();
+
+  if (!fs.existsSync(templatePath)) {
+    throw new Error(`Bundled database template not found at ${templatePath}`);
+  }
+
+  fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+  fs.copyFileSync(templatePath, targetPath);
+}
+
+async function isDatabaseSchemaReady() {
+  let prisma;
+
+  try {
+    const { PrismaClient } = require("@prisma/client");
+    prisma = new PrismaClient();
+    await prisma.appSetting.findFirst();
+    return true;
+  } catch (error) {
+    if (error?.code === "P2021" || String(error?.message || "").includes("does not exist")) {
+      return false;
+    }
+
+    throw error;
+  } finally {
+    await prisma?.$disconnect?.().catch(() => {});
+  }
+}
+
+async function ensureLocalDatabaseSchema() {
+  const databasePath = getLocalDatabasePath();
+
+  if (!fs.existsSync(databasePath)) {
+    copyBundledDatabaseTemplate(databasePath);
+  }
+
+  const isReady = await isDatabaseSchemaReady();
+
+  if (isReady) {
+    return;
+  }
+
+  const backupPath = `${databasePath}.invalid-${Date.now()}.bak`;
+
+  if (fs.existsSync(databasePath)) {
+    fs.renameSync(databasePath, backupPath);
+  }
+
+  copyBundledDatabaseTemplate(databasePath);
+
+  const isReadyAfterRestore = await isDatabaseSchemaReady();
+
+  if (!isReadyAfterRestore) {
+    throw new Error("Unable to initialize the local SQLite database.");
+  }
+}
+
 function getUpdateErrorStatus(error) {
   const message = String(error?.message || error || "").toLowerCase();
   const stack = String(error?.stack || "").toLowerCase();
@@ -1177,7 +1243,8 @@ async function startStandaloneServer(serverEntry, standaloneDir, serverPort) {
   process.env.HOSTNAME = localAppHost;
   process.env.NEXTAUTH_URL = `http://${localAppHost}:${serverPort}`;
   process.env.NEXTAUTH_URL_INTERNAL = `http://${localAppHost}:${serverPort}`;
-  process.env.DATABASE_URL = toPrismaSqliteUrl(path.join(app.getPath("userData"), "placedv-local.db"));
+  process.env.DATABASE_URL = toPrismaSqliteUrl(getLocalDatabasePath());
+  await ensureLocalDatabaseSchema();
   process.chdir(standaloneDir);
 
   require(serverEntry);
