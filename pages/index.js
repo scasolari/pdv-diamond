@@ -1,10 +1,10 @@
 import { Button } from "@/components/ui/button";
-import { signIn, useSession } from "next-auth/react";
+import { getCsrfToken, useSession } from "next-auth/react";
 import { PiGithubLogoBold, PiMetaLogoBold } from "react-icons/pi";
 import { useRouter } from "next/router";
 import { useEffect } from "react";
 
-export default function Home() {
+export default function Home({ csrfToken }) {
     const router = useRouter();
     const { status } = useSession();
     const authError = typeof router.query?.error === "string" ? router.query.error : null;
@@ -31,13 +31,31 @@ export default function Home() {
                 {authErrorMessage}
             </div>
         ) : null}
-        <Button className="w-fit flex flex-row gap-2 bg-blue-600 shadow-none hover:bg-blue-700" onClick={() => signIn("facebook", { callbackUrl: "/app/dashboard" })}>
-            <PiMetaLogoBold/>
-            Login with Meta
-        </Button>
-        <Button className="w-fit flex flex-row gap-2 bg-neutral-800 shadow-none hover:bg-neutral-950" onClick={() => signIn("github", { callbackUrl: "/app/dashboard" })}>
-            <PiGithubLogoBold/>
-            Login with GitHub
-        </Button>
+        <form method="post" action="/api/auth/signin/facebook" className="w-fit">
+            <input type="hidden" name="csrfToken" value={csrfToken || ""} />
+            <input type="hidden" name="callbackUrl" value="/app/dashboard" />
+            <Button type="submit" className="w-fit flex flex-row gap-2 bg-blue-600 shadow-none hover:bg-blue-700">
+                <PiMetaLogoBold/>
+                Login with Meta
+            </Button>
+        </form>
+        <form method="post" action="/api/auth/signin/github" className="w-fit">
+            <input type="hidden" name="csrfToken" value={csrfToken || ""} />
+            <input type="hidden" name="callbackUrl" value="/app/dashboard" />
+            <Button type="submit" className="w-fit flex flex-row gap-2 bg-neutral-800 shadow-none hover:bg-neutral-950">
+                <PiGithubLogoBold/>
+                Login with GitHub
+            </Button>
+        </form>
     </div>
+}
+
+export async function getServerSideProps(context) {
+    const csrfToken = await getCsrfToken(context);
+
+    return {
+        props: {
+            csrfToken: csrfToken || null,
+        },
+    };
 }
