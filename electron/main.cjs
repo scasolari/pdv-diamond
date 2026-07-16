@@ -2,6 +2,7 @@ const { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, session } = requ
 const { autoUpdater } = require("electron-updater");
 const { SerialPort } = require("serialport");
 const { execFile, spawn } = require("child_process");
+const dotenv = require("dotenv");
 const os = require("os");
 const path = require("path");
 const net = require("net");
@@ -36,6 +37,27 @@ let updateStatus = {
 
 app.setName(desktopAppName);
 process.title = desktopAppName;
+
+function loadDesktopEnv() {
+  const candidatePaths = [
+    path.join(process.cwd(), ".env"),
+    app?.isPackaged ? path.join(process.resourcesPath, ".env") : null,
+    app?.isPackaged ? path.join(process.resourcesPath, "app-standalone", ".env") : null,
+  ].filter(Boolean);
+
+  for (const candidatePath of candidatePaths) {
+    if (!fs.existsSync(candidatePath)) {
+      continue;
+    }
+
+    dotenv.config({
+      path: candidatePath,
+      override: false,
+    });
+  }
+}
+
+loadDesktopEnv();
 
 function toPrismaSqliteUrl(filePath) {
   return `file:${filePath.split(path.sep).join("/")}`;
