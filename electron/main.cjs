@@ -2,7 +2,6 @@ const { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, session } = requ
 const { autoUpdater } = require("electron-updater");
 const { SerialPort } = require("serialport");
 const { execFile, spawn } = require("child_process");
-const dotenv = require("dotenv");
 const os = require("os");
 const path = require("path");
 const net = require("net");
@@ -38,6 +37,38 @@ let updateStatus = {
 app.setName(desktopAppName);
 process.title = desktopAppName;
 
+function parseEnvFile(fileContent) {
+  return fileContent
+    .split(/\r?\n/)
+    .reduce((result, rawLine) => {
+      const line = rawLine.trim();
+
+      if (!line || line.startsWith("#")) {
+        return result;
+      }
+
+      const separatorIndex = line.indexOf("=");
+
+      if (separatorIndex === -1) {
+        return result;
+      }
+
+      const key = line.slice(0, separatorIndex).trim();
+      const rawValue = line.slice(separatorIndex + 1).trim();
+      const unwrappedValue =
+        (rawValue.startsWith('"') && rawValue.endsWith('"')) ||
+        (rawValue.startsWith("'") && rawValue.endsWith("'"))
+          ? rawValue.slice(1, -1)
+          : rawValue;
+
+      if (key) {
+        result[key] = unwrappedValue;
+      }
+
+      return result;
+    }, {});
+}
+
 function loadDesktopEnv() {
   const candidatePaths = [
     path.join(process.cwd(), ".env"),
@@ -50,10 +81,17 @@ function loadDesktopEnv() {
       continue;
     }
 
-    dotenv.config({
-      path: candidatePath,
-      override: false,
-    });
+    try {
+      const parsedEnv = parseEnvFile(fs.readFileSync(candidatePath, "utf8"));
+
+      for (const [key, value] of Object.entries(parsedEnv)) {
+        if (process.env[key] === undefined) {
+          process.env[key] = value;
+        }
+      }
+    } catch (error) {
+      console.error(`Failed to load env file at ${candidatePath}:`, error);
+    }
   }
 }
 
