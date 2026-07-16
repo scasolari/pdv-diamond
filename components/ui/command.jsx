@@ -32,9 +32,29 @@ const CommandDialog = ({
   );
 }
 
-const CommandInput = React.forwardRef(({ className, ...props }, ref) => (
+const CommandInput = React.forwardRef(({
+  className,
+  icon,
+  onIconClick,
+  iconClassName,
+  ...props
+}, ref) => (
   <div className="flex items-center px-3" cmdk-input-wrapper="">
-    <MagnifyingGlassIcon className="mr-2 h-4 w-4 shrink-0 opacity-50" />
+    {icon ? (
+      <button
+        type="button"
+        onClick={onIconClick}
+        className={cn(
+          "mr-2 flex h-4 w-4 shrink-0 items-center justify-center opacity-50",
+          onIconClick ? "cursor-pointer" : "cursor-default",
+          iconClassName
+        )}
+      >
+        {icon}
+      </button>
+    ) : (
+      <MagnifyingGlassIcon className={cn("mr-2 h-4 w-4 shrink-0 opacity-50", iconClassName)} />
+    )}
     <CommandPrimitive.Input
       ref={ref}
       className={cn(
