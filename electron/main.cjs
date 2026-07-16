@@ -1114,6 +1114,8 @@ async function startStandaloneServer(serverEntry, standaloneDir, serverPort) {
   process.env.NODE_ENV = "production";
   process.env.PORT = String(serverPort);
   process.env.HOSTNAME = "127.0.0.1";
+  process.env.NEXTAUTH_URL = `http://127.0.0.1:${serverPort}`;
+  process.env.NEXTAUTH_URL_INTERNAL = `http://127.0.0.1:${serverPort}`;
   process.env.DATABASE_URL = toPrismaSqliteUrl(path.join(app.getPath("userData"), "placedv-local.db"));
   process.chdir(standaloneDir);
 

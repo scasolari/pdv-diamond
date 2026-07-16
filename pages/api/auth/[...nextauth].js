@@ -10,6 +10,10 @@ const useSecureCookies = process.env.NEXTAUTH_URL?.startsWith("https://") ?? fal
 export default NextAuth({
     adapter: PrismaAdapter(prisma),
     secret: process.env.NEXTAUTH_SECRET,
+    pages: {
+        signIn: "/",
+        error: "/",
+    },
     session: {
         strategy: "jwt",
         maxAge: sessionMaxAge,
@@ -35,7 +39,8 @@ export default NextAuth({
         }),
         FacebookProvider({
             clientId: process.env.FACEBOOK_CLIENT_ID,
-            clientSecret: process.env.FACEBOOK_CLIENT_SECRET
+            clientSecret: process.env.FACEBOOK_CLIENT_SECRET,
+            allowDangerousEmailAccountLinking: true,
         })
     ],
     callbacks: {
