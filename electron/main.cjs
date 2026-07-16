@@ -14,7 +14,8 @@ const sshDiscoveryTimeoutMs = 180;
 const sshDiscoveryConcurrency = 48;
 
 const defaultPort = Number(process.env.PORT || 3000);
-const devServerUrl = process.env.ELECTRON_URL || `http://localhost:${defaultPort}`;
+const localAppHost = "127.0.0.1";
+const devServerUrl = process.env.ELECTRON_URL || `http://${localAppHost}:${defaultPort}`;
 const appEntryUrl = `${devServerUrl.replace(/\/$/, "")}/app/dashboard`;
 const isDev = process.env.NODE_ENV === "development";
 const electronSessionPartition = "persist:placedv-desktop";
@@ -109,7 +110,7 @@ function syncWindowChromeTheme(theme, resolvedTheme) {
   }
 }
 
-function waitForPort(portToCheck, host = "127.0.0.1", timeoutMs = 30000) {
+function waitForPort(portToCheck, host = localAppHost, timeoutMs = 30000) {
   return new Promise((resolve, reject) => {
     const startTime = Date.now();
 
@@ -145,7 +146,7 @@ function getAvailablePort(preferredPort) {
         const fallbackServer = net.createServer();
 
         fallbackServer.once("error", reject);
-        fallbackServer.listen(0, "127.0.0.1", () => {
+        fallbackServer.listen(0, localAppHost, () => {
           const address = fallbackServer.address();
           const freePort = typeof address === "object" && address ? address.port : preferredPort;
 
@@ -157,7 +158,7 @@ function getAvailablePort(preferredPort) {
       reject(error);
     });
 
-    server.listen(preferredPort, "127.0.0.1", () => {
+    server.listen(preferredPort, localAppHost, () => {
       const address = server.address();
       const freePort = typeof address === "object" && address ? address.port : preferredPort;
 
@@ -1113,9 +1114,9 @@ function getProductionServerPaths() {
 async function startStandaloneServer(serverEntry, standaloneDir, serverPort) {
   process.env.NODE_ENV = "production";
   process.env.PORT = String(serverPort);
-  process.env.HOSTNAME = "127.0.0.1";
-  process.env.NEXTAUTH_URL = `http://127.0.0.1:${serverPort}`;
-  process.env.NEXTAUTH_URL_INTERNAL = `http://127.0.0.1:${serverPort}`;
+  process.env.HOSTNAME = localAppHost;
+  process.env.NEXTAUTH_URL = `http://${localAppHost}:${serverPort}`;
+  process.env.NEXTAUTH_URL_INTERNAL = `http://${localAppHost}:${serverPort}`;
   process.env.DATABASE_URL = toPrismaSqliteUrl(path.join(app.getPath("userData"), "placedv-local.db"));
   process.chdir(standaloneDir);
 
@@ -1185,7 +1186,7 @@ async function loadApp() {
   }
 
   const { standaloneDir, serverEntry } = getProductionServerPaths();
-  const serverPort = await getAvailablePort(defaultPort);
+  const serverPort = defaultPort;
 
   if (!fs.existsSync(serverEntry)) {
     await dialog.showErrorBox(
@@ -1199,7 +1200,7 @@ async function loadApp() {
   await startStandaloneServer(serverEntry, standaloneDir, serverPort);
 
   await waitForPort(serverPort);
-  await mainWindow.loadURL(`http://127.0.0.1:${serverPort}/app/dashboard`);
+  await mainWindow.loadURL(`http://${localAppHost}:${serverPort}/app/dashboard`);
   scheduleAutoUpdateChecks();
 }
 
