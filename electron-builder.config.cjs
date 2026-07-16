@@ -47,6 +47,8 @@ module.exports = {
     const publicTarget = path.join(standaloneTarget, "public");
     const envSource = path.join(projectDir, ".env");
     const envTarget = path.join(appBundlePath, ".env");
+    const databaseTemplateSource = path.join(projectDir, "prisma", "prisma", "placedv-local.db");
+    const databaseTemplateTarget = path.join(appBundlePath, "placedv-local-template.db");
 
     fs.rmSync(standaloneTarget, { recursive: true, force: true });
     fs.mkdirSync(path.dirname(staticTarget), { recursive: true });
@@ -59,6 +61,10 @@ module.exports = {
 
     if (fs.existsSync(envSource)) {
       fs.cpSync(envSource, envTarget);
+    }
+
+    if (fs.existsSync(databaseTemplateSource)) {
+      fs.cpSync(databaseTemplateSource, databaseTemplateTarget);
     }
   },
 };
