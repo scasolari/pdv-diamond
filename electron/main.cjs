@@ -121,21 +121,15 @@ function copyBundledDatabaseTemplate(targetPath) {
 }
 
 async function isDatabaseSchemaReady() {
-  let prisma;
-
   try {
-    const { PrismaClient } = require("@prisma/client");
-    prisma = new PrismaClient();
-    await prisma.appSetting.findFirst();
-    return true;
-  } catch (error) {
-    if (error?.code === "P2021" || String(error?.message || "").includes("does not exist")) {
-      return false;
-    }
+    const { stdout } = await execFileAsync("sqlite3", [
+      getLocalDatabasePath(),
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='AppSetting' LIMIT 1;",
+    ]);
 
-    throw error;
-  } finally {
-    await prisma?.$disconnect?.().catch(() => {});
+    return String(stdout || "").trim() === "AppSetting";
+  } catch (error) {
+    return false;
   }
 }
 
