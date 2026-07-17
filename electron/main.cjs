@@ -683,6 +683,101 @@ function detectDeviceTransport(port) {
   return "usb";
 }
 
+function normalizeDeviceName(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+}
+
+function extractBluetoothDeviceNames(payload, result = []) {
+  if (!payload) {
+    return result;
+  }
+
+  if (Array.isArray(payload)) {
+    payload.forEach((item) => extractBluetoothDeviceNames(item, result));
+    return result;
+  }
+
+  if (typeof payload !== "object") {
+    return result;
+  }
+
+  for (const [key, value] of Object.entries(payload)) {
+    const looksLikeBluetoothDevice =
+      value &&
+      typeof value === "object" &&
+      !Array.isArray(value) &&
+      Object.keys(value).some((nestedKey) => nestedKey.startsWith("device_"));
+
+    if (looksLikeBluetoothDevice) {
+      result.push(key);
+    }
+
+    extractBluetoothDeviceNames(value, result);
+  }
+
+  return result;
+}
+
+async function listMacBluetoothDeviceNames() {
+  if (process.platform !== "darwin") {
+    return [];
+  }
+
+  try {
+    const { stdout } = await execFileAsync("system_profiler", ["SPBluetoothDataType", "-json"], {
+      maxBuffer: 5 * 1024 * 1024,
+    });
+    const parsed = JSON.parse(stdout);
+    const names = extractBluetoothDeviceNames(parsed);
+
+    return [...new Set(names)];
+  } catch (error) {
+    console.error("Failed to list macOS Bluetooth devices:", error);
+    return [];
+  }
+}
+
+function isMacBluetoothSerialPort(port, bluetoothDeviceNames) {
+  const pathValue = String(port?.path || "").toLowerCase();
+  const baseName = pathValue.split("/").pop() || "";
+
+  if (process.platform !== "darwin" || !baseName.startsWith("tty.") || port?.vendorId || port?.productId) {
+    return false;
+  }
+
+  const normalizedSerialName = normalizeDeviceName(baseName.replace(/^tty\./, ""));
+
+  if (!normalizedSerialName) {
+    return false;
+  }
+
+  return bluetoothDeviceNames.some((deviceName) => {
+    const normalizedBluetoothName = normalizeDeviceName(deviceName);
+
+    if (!normalizedBluetoothName) {
+      return false;
+    }
+
+    return (
+      normalizedBluetoothName === normalizedSerialName ||
+      normalizedBluetoothName.includes(normalizedSerialName) ||
+      normalizedSerialName.includes(normalizedBluetoothName)
+    );
+  });
+}
+
+function detectDeviceTransportWithContext(port, options = {}) {
+  const bluetoothDeviceNames = options.bluetoothDeviceNames || [];
+
+  if (isMacBluetoothSerialPort(port, bluetoothDeviceNames)) {
+    return "bluetooth";
+  }
+
+  return detectDeviceTransport(port);
+}
+
 function isIgnoredSerialPort(port) {
   const pathValue = String(port?.path || "").toLowerCase();
 
@@ -700,7 +795,10 @@ function isIgnoredSerialPort(port) {
 
 async function listSerialDevices() {
   try {
-    const ports = await SerialPort.list();
+    const [ports, bluetoothDeviceNames] = await Promise.all([
+      SerialPort.list(),
+      listMacBluetoothDeviceNames(),
+    ]);
 
     return ports
       .filter((port) => !isIgnoredSerialPort(port))
@@ -713,7 +811,7 @@ async function listSerialDevices() {
         vendorId: port.vendorId || null,
         productId: port.productId || null,
         pnpId: port.pnpId || null,
-        transport: detectDeviceTransport(port),
+        transport: detectDeviceTransportWithContext(port, { bluetoothDeviceNames }),
         type: "serial",
         source: "local",
       }))

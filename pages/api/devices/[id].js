@@ -1,4 +1,5 @@
 import db from "@/lib/db";
+import { Prisma } from "@prisma/client";
 
 export default async function handler(req, res) {
     const { id } = req.query;
@@ -49,24 +50,40 @@ export default async function handler(req, res) {
             data.baudRate = nextBaudRate;
         }
 
-        const device = await db.savedDevice.update({
-            where: {
-                id,
-            },
-            data,
-        });
+        try {
+            const device = await db.savedDevice.update({
+                where: {
+                    id,
+                },
+                data,
+            });
 
-        return res.status(200).json(device);
+            return res.status(200).json(device);
+        } catch (error) {
+            if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2025") {
+                return res.status(404).json({ message: "Device not found." });
+            }
+
+            throw error;
+        }
     }
 
     if (req.method === "DELETE") {
-        await db.savedDevice.delete({
-            where: {
-                id,
-            },
-        });
+        try {
+            await db.savedDevice.delete({
+                where: {
+                    id,
+                },
+            });
 
-        return res.status(200).json({ success: true });
+            return res.status(200).json({ success: true });
+        } catch (error) {
+            if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2025") {
+                return res.status(404).json({ message: "Device not found." });
+            }
+
+            throw error;
+        }
     }
 
     return res.status(405).json({ message: "Method not allowed." });
