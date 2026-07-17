@@ -12,12 +12,15 @@ import {
     SelectValue,
 } from "@/components/ui/select"
 import {Button} from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch"
 
 function General(props) {
     const { profile } = props;
     const { theme, setTheme } = useTheme();
     const [mounted, setMounted] = useState(false);
     const [appInfo, setAppInfo] = useState(null);
+    const [deleteConfirmationEnabled, setDeleteConfirmationEnabled] = useState(true);
+    const [archiveConfirmationEnabled, setArchiveConfirmationEnabled] = useState(true);
     const [updateButton, setUpdateButton] = useState({
         state: "idle",
         label: "Check for updates",
@@ -67,6 +70,36 @@ function General(props) {
         };
     }, []);
 
+    useEffect(() => {
+        let cancelled = false;
+
+        async function loadConfirmationSettings() {
+            try {
+                const [deleteResponse, archiveResponse] = await Promise.all([
+                    fetch("/api/app-settings/deleteDeviceConfirmation"),
+                    fetch("/api/app-settings/archiveDeviceConfirmation"),
+                ]);
+                const [deleteResult, archiveResult] = await Promise.all([
+                    deleteResponse.json(),
+                    archiveResponse.json(),
+                ]);
+
+                if (!cancelled) {
+                    setDeleteConfirmationEnabled(deleteResult?.value !== "false");
+                    setArchiveConfirmationEnabled(archiveResult?.value !== "false");
+                }
+            } catch (error) {
+                return;
+            }
+        }
+
+        loadConfirmationSettings();
+
+        return () => {
+            cancelled = true;
+        };
+    }, []);
+
     async function handleCheckForUpdates() {
         if (!window?.electron?.checkForUpdates) {
             return;
@@ -83,6 +116,42 @@ function General(props) {
                 state: "error",
                 label: "Check failed",
             });
+        }
+    }
+
+    async function handleDeleteConfirmationChange(nextValue) {
+        setDeleteConfirmationEnabled(nextValue);
+
+        try {
+            await fetch("/api/app-settings/deleteDeviceConfirmation", {
+                method: "PUT",
+                headers: {
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                    value: String(nextValue),
+                }),
+            });
+        } catch (error) {
+            setDeleteConfirmationEnabled(!nextValue);
+        }
+    }
+
+    async function handleArchiveConfirmationChange(nextValue) {
+        setArchiveConfirmationEnabled(nextValue);
+
+        try {
+            await fetch("/api/app-settings/archiveDeviceConfirmation", {
+                method: "PUT",
+                headers: {
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                    value: String(nextValue),
+                }),
+            });
+        } catch (error) {
+            setArchiveConfirmationEnabled(!nextValue);
         }
     }
 
@@ -118,6 +187,40 @@ function General(props) {
                                 </SelectGroup>
                             </SelectContent>
                         </Select>
+                    </div>
+                </div>
+                <div className="flex flex-row justify-between items-center">
+                    <div className="flex flex-col gap-1">
+                        <div className="flex flex-row gap-3 items-center">
+                            <h3 className="font-semibold text-sm items-center">Delete confirmation</h3>
+                        </div>
+                        <p className="font-semibold text-xs text-neutral-500">
+                            Ask before deleting a thread and its chat history.
+                        </p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                        <Switch
+                            className="data-[state=checked]:bg-blue-600"
+                            checked={deleteConfirmationEnabled}
+                            onCheckedChange={handleDeleteConfirmationChange}
+                        />
+                    </div>
+                </div>
+                <div className="flex flex-row justify-between items-center">
+                    <div className="flex flex-col gap-1">
+                        <div className="flex flex-row gap-3 items-center">
+                            <h3 className="font-semibold text-sm items-center">Archive confirmation</h3>
+                        </div>
+                        <p className="font-semibold text-xs text-neutral-500">
+                            Require a second click on the inline archive action before a thread is archived.
+                        </p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                        <Switch
+                            className="data-[state=checked]:bg-blue-600"
+                            checked={archiveConfirmationEnabled}
+                            onCheckedChange={handleArchiveConfirmationChange}
+                        />
                     </div>
                 </div>
                 <div className="flex flex-row justify-between items-center">

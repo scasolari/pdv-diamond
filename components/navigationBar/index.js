@@ -110,8 +110,11 @@ function NavigationBar(props) {
     const [deviceAlias, setDeviceAlias] = useState("")
     const [deviceToRename, setDeviceToRename] = useState(null)
     const [renameDeviceValue, setRenameDeviceValue] = useState("")
+    const [deviceToArchive, setDeviceToArchive] = useState(null)
     const [deviceToDelete, setDeviceToDelete] = useState(null)
     const [deleteConfirmationValue, setDeleteConfirmationValue] = useState("")
+    const [deleteConfirmationEnabled, setDeleteConfirmationEnabled] = useState(true)
+    const [archiveConfirmationEnabled, setArchiveConfirmationEnabled] = useState(true)
     const [unavailableDevice, setUnavailableDevice] = useState(null)
     const [openDeviceMenuId, setOpenDeviceMenuId] = useState(null)
     const [savedDeviceStatuses, setSavedDeviceStatuses] = useState({})
@@ -361,10 +364,16 @@ function NavigationBar(props) {
         }
     }
 
-    async function handleArchiveDevice(device) {
+    async function handleArchiveDevice(nextDevice = null) {
+        const targetDevice = nextDevice || deviceToArchive;
+
+        if (!targetDevice) {
+            return;
+        }
+
         try {
             setOpenDeviceMenuId(null);
-            await fetch(`/api/devices/${device.id}`, {
+            await fetch(`/api/devices/${targetDevice.id}`, {
                 method: "PATCH",
                 headers: {
                     "Content-Type": "application/json",
@@ -374,6 +383,7 @@ function NavigationBar(props) {
                 }),
             });
 
+            setDeviceToArchive(null);
             await refreshSavedDevices();
             await router.push("/app/dashboard");
         } catch (error) {
@@ -381,8 +391,25 @@ function NavigationBar(props) {
         }
     }
 
+    function openArchiveDeviceDialog(device) {
+        setOpenDeviceMenuId(null);
+
+        if (!archiveConfirmationEnabled) {
+            void handleArchiveDevice(device);
+            return;
+        }
+
+        setDeviceToArchive(device);
+    }
+
     function openDeleteDeviceDialog(device) {
         setOpenDeviceMenuId(null);
+
+        if (!deleteConfirmationEnabled) {
+            void handleDeleteDevice(device);
+            return;
+        }
+
         setDeviceToDelete(device);
         setDeleteConfirmationValue("");
     }
@@ -423,13 +450,15 @@ function NavigationBar(props) {
         }
     }
 
-    async function handleDeleteDevice() {
-        if (!deviceToDelete) {
+    async function handleDeleteDevice(nextDevice = null) {
+        const targetDevice = nextDevice || deviceToDelete;
+
+        if (!targetDevice) {
             return;
         }
 
         try {
-            const deletedDeviceId = deviceToDelete.id;
+            const deletedDeviceId = targetDevice.id;
 
             await fetch(`/api/devices/${deletedDeviceId}`, {
                 method: "DELETE",
@@ -568,6 +597,36 @@ function NavigationBar(props) {
         return () => {
             isMounted = false;
             unsubscribe?.();
+        };
+    }, []);
+
+    useEffect(() => {
+        let cancelled = false;
+
+        async function loadConfirmationSettings() {
+            try {
+                const [deleteResponse, archiveResponse] = await Promise.all([
+                    fetch("/api/app-settings/deleteDeviceConfirmation"),
+                    fetch("/api/app-settings/archiveDeviceConfirmation"),
+                ]);
+                const [deleteResult, archiveResult] = await Promise.all([
+                    deleteResponse.json(),
+                    archiveResponse.json(),
+                ]);
+
+                if (!cancelled) {
+                    setDeleteConfirmationEnabled(deleteResult?.value !== "false");
+                    setArchiveConfirmationEnabled(archiveResult?.value !== "false");
+                }
+            } catch (error) {
+                return;
+            }
+        }
+
+        loadConfirmationSettings();
+
+        return () => {
+            cancelled = true;
         };
     }, []);
 
@@ -724,18 +783,18 @@ function NavigationBar(props) {
                                             <>
                                                 <CommandEmpty className="!font-semibold !text-xs p-3">No results found.</CommandEmpty>
                                                 <CommandGroup heading="Action">
-                                                    <CommandItem className="h-7 rounded-lg flex flex-row gap-2">
-                                                        <Link href="/app/settings/general" className="items-center w-full !font-semibold !text-xs h-7 rounded-lg flex flex-row gap-2">
-                                                            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round" className="!h-[14px] lucide lucide-settings-icon lucide-settings"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/></svg>
-                                                            Open settings
-                                                        </Link>
-                                                    </CommandItem>
                                                     <CommandItem
                                                         onSelect={openDevicesPalette}
                                                         className="!font-semibold !text-xs h-7 rounded-lg flex flex-row gap-2 cursor-pointer"
                                                     >
                                                         <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" class="!h-[14px] lucide lucide-hard-drive-icon lucide-hard-drive"><path d="M10 16h.01"/><path d="M2.212 11.577a2 2 0 0 0-.212.896V18a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-5.527a2 2 0 0 0-.212-.896L18.55 5.11A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><path d="M21.946 12.013H2.054"/><path d="M6 16h.01"/></svg>
                                                         Add device
+                                                    </CommandItem>
+                                                    <CommandItem className="h-7 rounded-lg flex flex-row gap-2">
+                                                        <Link href="/app/settings/general" className="items-center w-full !font-semibold !text-xs h-7 rounded-lg flex flex-row gap-2">
+                                                            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round" className="!h-[14px] lucide lucide-settings-icon lucide-settings"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/></svg>
+                                                            Open settings
+                                                        </Link>
                                                     </CommandItem>
                                                 </CommandGroup>
                                                 {ui?.savedDevices?.length ? (
@@ -785,10 +844,9 @@ function NavigationBar(props) {
                                 </Command>
                             </CommandDialog>
                             <li>
-                                <Link
-                                    href="#"
+                                <div
                                     onClick={openSearchPalette}
-                                    className={`font-semibold text-xs flex justify-between items-center gap-3 p-1.5 px-2 hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded-lg`}
+                                    className={`cursor-pointer font-semibold text-xs flex justify-between items-center gap-3 p-1.5 px-2 hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded-lg`}
                                 >
                                     <div className="flex flex-row items-center gap-3">
                                         <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-search-icon lucide-search"><path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/></svg>
@@ -797,7 +855,7 @@ function NavigationBar(props) {
                                     <Badge variant="secondary" className="p-0 px-1.5 text-[10px] h-fit font-semibold dark:bg-neutral-700/50 bg-neutral-200/50">
                                         ⌘K
                                     </Badge>
-                                </Link>
+                                </div>
                             </li>
                             <li>
                                 <Link
@@ -860,10 +918,11 @@ function NavigationBar(props) {
                                                             onClick={() => openRenameDeviceDialog(device)}
                                                             className="cursor-pointer font-semibold !text-xs gap-1"
                                                         >
-                                                            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="!h-[14px] lucide lucide-square-pen-icon lucide-square-pen"><path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z"/></svg>                                                            Rename device
+                                                            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="!h-[14px] lucide lucide-square-pen-icon lucide-square-pen"><path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z"/></svg>
+                                                            Rename device
                                                         </DropdownMenuItem>
                                                         <DropdownMenuItem
-                                                            onClick={() => handleArchiveDevice(device)}
+                                                            onClick={() => openArchiveDeviceDialog(device)}
                                                             className="cursor-pointer font-semibold !text-xs gap-1"
                                                         >
                                                             <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="!h-[14px] lucide lucide-archive-icon lucide-archive"><rect width="20" height="5" x="2" y="3" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/></svg>
@@ -1020,7 +1079,7 @@ function NavigationBar(props) {
                                 id="rename-device-input"
                                 value={renameDeviceValue}
                                 onChange={(event) => setRenameDeviceValue(event.target.value)}
-                                className="h-7 p-0 rounded-lg border border-neutral-200 bg-white px-3 text-xs font-semibold outline-none dark:border-neutral-800 dark:bg-neutral-900"
+                                className="h-7 p-0 rounded-lg border-0 border-neutral-200 ring-1 ring-neutral-200 dark:ring-neutral-700 bg-white dark:bg-neutral-800 px-3 text-xs font-semibold outline-none dark:border-neutral-800 focus-visible:ring-blue-500 dark:focus-visible:ring-blue-500"
                                 placeholder="Arduino banco test"
                             />
                         </div>
@@ -1042,6 +1101,42 @@ function NavigationBar(props) {
                             className="rounded-lg h-7 !font-semibold !text-xs border bg-blue-600 hover:bg-blue-700 border-blue-800 text-white dark:text-white dark:bg-neutral-800 dark:border-neutral-700"
                         >
                             Save
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+            <Dialog
+                open={Boolean(deviceToArchive)}
+                onOpenChange={(nextOpen) => {
+                    if (!nextOpen) {
+                        setDeviceToArchive(null);
+                    }
+                }}
+            >
+                <DialogContent className="sm:max-w-md p-3">
+                    <DialogHeader>
+                        <DialogTitle className="font-semibold text-sm">
+                            Archive {deviceToArchive?.alias || deviceToArchive?.name}
+                        </DialogTitle>
+                        <DialogDescription className="font-semibold text-xs">
+                            Conferma se vuoi archiviare questo device.
+                        </DialogDescription>
+                    </DialogHeader>
+                    <DialogFooter>
+                        <Button
+                            onClick={() => {
+                                setDeviceToArchive(null);
+                            }}
+                            className="rounded-lg h-7 !font-semibold !text-xs border bg-white hover:bg-neutral-50 text-black dark:text-white dark:bg-neutral-800 dark:border-neutral-700"
+                        >
+                            Cancel
+                        </Button>
+                        <Button
+                            onClick={() => handleArchiveDevice()}
+                            type="button"
+                            className="rounded-lg h-7 !font-semibold !text-xs border border-blue-700 bg-blue-600 hover:bg-blue-700 text-white disabled:border-blue-300 disabled:bg-blue-300"
+                        >
+                            Archive
                         </Button>
                     </DialogFooter>
                 </DialogContent>
@@ -1071,7 +1166,7 @@ function NavigationBar(props) {
                                 id="delete-device-confirmation"
                                 value={deleteConfirmationValue}
                                 onChange={(event) => setDeleteConfirmationValue(event.target.value)}
-                                className="h-7 p-0 rounded-lg border border-neutral-200 bg-white px-3 text-xs font-semibold outline-none dark:border-neutral-800 dark:bg-neutral-900"
+                                className="h-7 p-0 rounded-lg border-0 border-neutral-200 ring-1 ring-neutral-200 dark:ring-neutral-700 bg-white dark:bg-neutral-800 px-3 text-xs font-semibold outline-none dark:border-neutral-800 focus-visible:ring-blue-500 dark:focus-visible:ring-blue-500"
                                 placeholder="Digita il nome del device"
                             />
                         </div>
@@ -1087,7 +1182,7 @@ function NavigationBar(props) {
                             Cancel
                         </Button>
                         <Button
-                            onClick={handleDeleteDevice}
+                            onClick={() => handleDeleteDevice()}
                             type="button"
                             disabled={deleteConfirmationValue !== (deviceToDelete?.alias || deviceToDelete?.name)}
                             className="rounded-lg h-7 !font-semibold !text-xs border border-red-700 bg-red-600 hover:bg-red-700 text-white disabled:border-red-300 disabled:bg-red-300"
