@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, session } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, session, shell } = require("electron");
 const { autoUpdater } = require("electron-updater");
 const { SerialPort } = require("serialport");
 const { Client: SshClient } = require("ssh2");
@@ -28,10 +28,16 @@ const deviceTerminalSessions = new Map();
 const runtimeConfigFilename = "runtime-config.json";
 const requiredProductionEnvKeys = [
   "NEXTAUTH_SECRET",
-  "GITHUB_CLIENT_ID",
-  "GITHUB_CLIENT_SECRET",
-  "FACEBOOK_CLIENT_ID",
-  "FACEBOOK_CLIENT_SECRET",
+];
+const optionalProviderEnvGroups = [
+  {
+    name: "GitHub",
+    keys: ["GITHUB_CLIENT_ID", "GITHUB_CLIENT_SECRET"],
+  },
+  {
+    name: "Facebook",
+    keys: ["FACEBOOK_CLIENT_ID", "FACEBOOK_CLIENT_SECRET"],
+  },
 ];
 
 let mainWindow;
@@ -179,16 +185,59 @@ function applyRuntimeConfigEnv() {
   }
 
   const missingKeys = requiredProductionEnvKeys.filter((key) => !String(process.env[key] || "").trim());
+  const incompleteProviders = [];
+  const enabledProviders = [];
 
-  if (missingKeys.length > 0) {
-    throw new Error(
+  for (const providerGroup of optionalProviderEnvGroups) {
+    const filledKeys = providerGroup.keys.filter((key) => String(process.env[key] || "").trim());
+
+    if (filledKeys.length === 0) {
+      continue;
+    }
+
+    if (filledKeys.length !== providerGroup.keys.length) {
+      incompleteProviders.push({
+        name: providerGroup.name,
+        missingKeys: providerGroup.keys.filter((key) => !String(process.env[key] || "").trim()),
+      });
+      continue;
+    }
+
+    enabledProviders.push(providerGroup.name);
+  }
+
+  if (missingKeys.length > 0 || incompleteProviders.length > 0 || enabledProviders.length === 0) {
+    const detailLines = [];
+
+    if (missingKeys.length > 0) {
+      detailLines.push(`Missing required keys: ${missingKeys.join(", ")}`);
+    }
+
+    if (incompleteProviders.length > 0) {
+      for (const provider of incompleteProviders) {
+        detailLines.push(`${provider.name} is partially configured. Missing keys: ${provider.missingKeys.join(", ")}`);
+      }
+    }
+
+    if (enabledProviders.length === 0) {
+      detailLines.push("No auth provider is fully configured. Configure at least one provider.");
+    }
+
+    const error = new Error(
       [
-        `Missing production runtime config keys in ${runtimeConfigPath}:`,
-        missingKeys.join(", "),
+        "The packaged app is missing required runtime secrets.",
         "",
-        `Fill ${runtimeConfigFilename} inside the app userData folder before starting the packaged app.`,
+        `Config file: ${runtimeConfigPath}`,
+        ...detailLines,
       ].join("\n"),
     );
+    error.code = "RUNTIME_CONFIG_MISSING";
+    error.runtimeConfigPath = runtimeConfigPath;
+    error.runtimeConfigDir = path.dirname(runtimeConfigPath);
+    error.missingKeys = missingKeys;
+    error.incompleteProviders = incompleteProviders;
+    error.enabledProviders = enabledProviders;
+    throw error;
   }
 }
 
@@ -1864,6 +1913,35 @@ async function loadApp() {
   scheduleAutoUpdateChecks();
 }
 
+async function showStartupError(error) {
+  if (app.isPackaged && error?.code === "RUNTIME_CONFIG_MISSING") {
+    const actionIndex = await dialog.showMessageBox({
+      type: "error",
+      buttons: ["Open config folder", "OK"],
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true,
+      title: "Electron startup failed",
+      message: "Missing production runtime configuration.",
+      detail: [
+        `The packaged app needs ${runtimeConfigFilename} inside the userData folder.`,
+        `Folder: ${error.runtimeConfigDir}`,
+        error.missingKeys?.length ? `Missing keys: ${error.missingKeys.join(", ")}` : null,
+        ...(error.incompleteProviders || []).map((provider) => `${provider.name}: missing ${provider.missingKeys.join(", ")}`),
+        error.enabledProviders?.length ? `Enabled providers: ${error.enabledProviders.join(", ")}` : "Enabled providers: none",
+      ].filter(Boolean).join("\n\n"),
+    });
+
+    if (actionIndex.response === 0) {
+      await shell.openPath(error.runtimeConfigDir);
+    }
+
+    return;
+  }
+
+  dialog.showErrorBox("Avvio Electron fallito", error.message);
+}
+
 app.on("before-quit", async (event) => {
   if (isQuitting) {
     return;
@@ -1882,8 +1960,8 @@ app.on("before-quit", async (event) => {
   app.quit();
 });
 
-app.whenReady().then(loadApp).catch((error) => {
-  dialog.showErrorBox("Avvio Electron fallito", error.message);
+app.whenReady().then(loadApp).catch(async (error) => {
+  await showStartupError(error);
   app.quit();
 });
 

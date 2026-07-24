@@ -1,6 +1,6 @@
 {
   "name": "placedv-ai",
-  "version": "0.0.32",
+  "version": "0.0.33",
   "private": true,
   "main": "electron/main.cjs",
   "scripts": {
@@ -15,6 +15,7 @@
     "start": "cross-env DATABASE_URL=file:./prisma/placedv-local.db next start",
     "start:web": "cross-env DATABASE_URL=file:./prisma/placedv-local.db next start",
     "start:electron": "cross-env NODE_ENV=production electron .",
+    "runtime-config:generate": "node scripts/generate-runtime-config.cjs",
     "electron": "electron .",
     "lint": "next lint"
   },

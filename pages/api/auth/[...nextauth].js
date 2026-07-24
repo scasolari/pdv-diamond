@@ -6,6 +6,27 @@ import prisma from "@/lib/db";
 
 const sessionMaxAge = 30 * 24 * 60 * 60;
 const useSecureCookies = process.env.NEXTAUTH_URL?.startsWith("https://") ?? false;
+const providers = [];
+
+if (process.env.GITHUB_CLIENT_ID && process.env.GITHUB_CLIENT_SECRET) {
+    providers.push(
+        Github({
+            clientId: process.env.GITHUB_CLIENT_ID,
+            clientSecret: process.env.GITHUB_CLIENT_SECRET,
+            allowDangerousEmailAccountLinking: false,
+        })
+    );
+}
+
+if (process.env.FACEBOOK_CLIENT_ID && process.env.FACEBOOK_CLIENT_SECRET) {
+    providers.push(
+        FacebookProvider({
+            clientId: process.env.FACEBOOK_CLIENT_ID,
+            clientSecret: process.env.FACEBOOK_CLIENT_SECRET,
+            allowDangerousEmailAccountLinking: false,
+        })
+    );
+}
 
 export default NextAuth({
     adapter: PrismaAdapter(prisma),
@@ -31,18 +52,7 @@ export default NextAuth({
             },
         },
     },
-    providers: [
-        Github({
-            clientId: process.env.GITHUB_CLIENT_ID,
-            clientSecret: process.env.GITHUB_CLIENT_SECRET,
-            allowDangerousEmailAccountLinking: false,
-        }),
-        FacebookProvider({
-            clientId: process.env.FACEBOOK_CLIENT_ID,
-            clientSecret: process.env.FACEBOOK_CLIENT_SECRET,
-            allowDangerousEmailAccountLinking: false,
-        })
-    ],
+    providers,
     callbacks: {
         session: async ({ session, token }) => {
             if(session?.user) {
