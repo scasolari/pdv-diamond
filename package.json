@@ -1,6 +1,6 @@
 {
   "name": "placedv-ai",
-  "version": "0.0.31",
+  "version": "0.0.32",
   "private": true,
   "main": "electron/main.cjs",
   "scripts": {
@@ -9,7 +9,7 @@
     "dev": "cross-env DATABASE_URL=file:./prisma/placedv-local.db next dev",
     "dev:web": "cross-env DATABASE_URL=file:./prisma/placedv-local.db next dev",
     "dev:electron": "concurrently -k \"npm:dev:web\" \"npm:dev:electron:app\"",
-    "dev:electron:app": "wait-on tcp:3000 && cross-env NODE_ENV=development ELECTRON_URL=http://127.0.0.1:3000 electron .",
+    "dev:electron:app": "wait-on tcp:3000 && nodemon --watch electron --ext cjs,js,json --exec \"cross-env NODE_ENV=development ELECTRON_URL=http://127.0.0.1:3000 electron .\"",
     "build": "cross-env DATABASE_URL=file:./prisma/placedv-local.db next build",
     "build:web": "cross-env DATABASE_URL=file:./prisma/placedv-local.db next build",
     "start": "cross-env DATABASE_URL=file:./prisma/placedv-local.db next start",
@@ -83,9 +83,12 @@
     "redux-thunk": "^2.4.2",
     "serialport": "^13.0.0",
     "sonner": "^1.5.0",
+    "ssh2": "^1.17.0",
     "tailwind-merge": "^2.5.2",
     "tailwindcss-animate": "^1.0.7",
     "vaul": "^1.0.0",
+    "xterm": "^5.3.0",
+    "xterm-addon-fit": "^0.8.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {
@@ -95,6 +98,7 @@
     "electron-builder": "^26.15.3",
     "eslint": "^8",
     "eslint-config-next": "14.2.13",
+    "nodemon": "^3.1.14",
     "postcss": "^8",
     "tailwindcss": "^3.4.1",
     "wait-on": "^8.0.5"

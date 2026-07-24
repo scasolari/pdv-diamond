@@ -14,6 +14,20 @@ export const setSidebarWidth = (width) => dispatch => {
     });
 };
 
+export const setTerminalHeight = (height) => dispatch => {
+    dispatch({
+        type: t.SET_TERMINAL_HEIGHT,
+        payload: height
+    });
+};
+
+export const setDeviceTerminalOpen = (deviceId, isOpen) => dispatch => {
+    dispatch({
+        type: t.SET_DEVICE_TERMINAL_OPEN,
+        payload: { deviceId, isOpen }
+    });
+};
+
 export const addSavedDevice = (device) => dispatch => {
     dispatch({
         type: t.ADD_SAVED_DEVICE,

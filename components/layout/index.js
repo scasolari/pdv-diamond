@@ -8,7 +8,7 @@ import {
 import { connect } from "react-redux";
 import { setSidebarWidth } from "@/redux/actions/main";
 
-function Layout({ children, title, sidebarWidth, setSidebarWidth }) {
+function Layout({ children, title, sidebarWidth, setSidebarWidth, buttons }) {
     const containerRef = useRef(null);
     const panelGroupRef = useRef(null);
     const [groupWidth, setGroupWidth] = useState(0);
@@ -121,12 +121,16 @@ function Layout({ children, title, sidebarWidth, setSidebarWidth }) {
             <ResizablePanel defaultSize={82} className="min-w-0 overflow-hidden">
                 <div className="flex h-full min-w-0 flex-1 flex-col overflow-hidden">
                     <div
-                        className="px-6 flex h-11 w-full shrink-0 items-center border-b bg-transparent backdrop-blur-md"
-                        style={{ WebkitAppRegion: "drag" }}
+                        className="px-6 flex h-11 w-full shrink-0 items-center bg-transparent backdrop-blur-md justify-between"
                     >
-                        <span className="font-semibold text-sm">{title}</span>
+                        <div className="w-full" style={{ WebkitAppRegion: "drag" }}>
+                            <span className="font-semibold text-sm">{title}</span>
+                        </div>
+                        <div>
+                            {buttons}
+                        </div>
                     </div>
-                    <div className="min-h-0 flex-1 overflow-y-auto p-6 w-full">
+                    <div className="min-h-0 flex-1 overflow-y-auto w-full">
                         {children}
                     </div>
                 </div>

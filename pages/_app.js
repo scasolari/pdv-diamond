@@ -1,4 +1,5 @@
 import "@/styles/globals.css";
+import "xterm/css/xterm.css";
 import {SessionProvider} from "next-auth/react";
 import {Provider} from "react-redux";
 import {PersistGate} from "redux-persist/integration/react";

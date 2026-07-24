@@ -1,5 +1,13 @@
 // pages/api/auth/custom-signout.js
+import { getToken } from "next-auth/jwt";
+
 export default async function handler(req, res) {
+    const session = await getToken({ req, secret: process.env.NEXTAUTH_SECRET });
+
+    if (!session) {
+        return res.status(401).json({ message: "User not authenticated" });
+    }
+
     if (req.method !== 'POST') {
         return res.status(405).json({ message: 'Method not allowed' });
     }

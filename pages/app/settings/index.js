@@ -1,7 +1,6 @@
 import Layout from "@/components/layout";
-import {Button} from "@/components/ui/button";
 import axios from "axios";
-import {useState} from "react";
+import { useState } from "react";
 import Image from "next/image";
 import {
     AlertDialog,
@@ -11,64 +10,63 @@ import {
     AlertDialogHeader,
     AlertDialogTitle,
     AlertDialogTrigger,
-} from "@/components/ui/alert-dialog"
+} from "@/components/ui/alert-dialog";
+import { Button } from "@/components/ui/button";
 import {
     InputOTP,
     InputOTPGroup,
     InputOTPSlot,
-} from "@/components/ui/input-otp"
+} from "@/components/ui/input-otp";
 import useLogout from "@/lib/logout";
-import {useSession} from "next-auth/react";
-import { Switch } from "@/components/ui/switch"
-import {connect} from "react-redux";
-import {Label} from "@/components/ui/label";
-import {setProfile} from "@/redux/actions/main";
+import { Switch } from "@/components/ui/switch";
+import { connect } from "react-redux";
+import { Label } from "@/components/ui/label";
+import { setProfile } from "@/redux/actions/main";
 
 function Settings(props) {
-    const {profile, setProfile} = props;
-    const {data: session} = useSession();
+    const { profile, setProfile } = props;
     const [qrcode, setQrcode] = useState({});
-    const [value, setValue] = useState("")
+    const [value, setValue] = useState("");
     const [status, setStatus] = useState(profile?.user?.is2FAEnabled);
     const [loading, setLoading] = useState(false);
     const logout = useLogout();
 
     const updateStatus2FA = (newStatus) => {
-        setLoading(true)
+        setLoading(true);
         setStatus(newStatus);
         axios.post(`/api/2fa/status`, {
-            status: newStatus // Usa il nuovo valore, non quello dello state
-        }).then((res) => {
+            status: newStatus,
+        }).then(() => {
             setProfile({
                 ...profile,
                 user: {
                     ...profile.user,
-                    is2FAEnabled: newStatus // Usa il nuovo valore anche qui
-                }
+                    is2FAEnabled: newStatus,
+                },
             });
-            setTimeout(function (){
-                logout()
-            }, 1000)
-        })
-    }
+            setTimeout(() => {
+                logout();
+            }, 1000);
+        });
+    };
 
     const fetch2FASetUp = () => {
         axios.get(`/api/2fa/setup`)
             .then((res) => {
                 setQrcode(res.data);
-            })
-    }
+            });
+    };
 
     const verifyCode2fa = () => {
         axios.post(`/api/2fa/verify`, {
             token: value,
-            secret: qrcode.secret
-        }).then((res) => {
-            logout()
+            secret: qrcode.secret,
+        }).then(() => {
+            logout();
         }).catch((err) => {
-            console.log(err.message)
-        })
-    }
+            console.log(err.message);
+        });
+    };
 
     return <Layout title="Settings">
         <div>
@@ -81,13 +79,7 @@ function Settings(props) {
                                 <Label htmlFor="2fa" className="text-sm font-semibold">
                                     Activate 2FA
                                 </Label>
-                                <Switch
-                                    disabled={loading}
-                                    checked={status}
-                                    onCheckedChange={(e) => updateStatus2FA(e)} // Rimuovi il !
-                                    id="2fa"
-                                    className="shadow-none"
-                                />
+                                <Switch disabled={loading} checked={status} onCheckedChange={updateStatus2FA} id="2fa" className="shadow-none" />
                             </div>
                             <div className="text-sm font-semibold text-neutral-500">
                                 Use an authentication app to get a verification code to log into your account safely. You will be logged out.
@@ -152,6 +144,7 @@ const mapStateToProps = (state) => {
         profile: state.profile,
     };
 };
+
 const mapDispatchToProps = {
     setProfile,
 };

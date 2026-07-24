@@ -9,6 +9,10 @@ contextBridge.exposeInMainWorld("electron", {
   connectDevice: (payload) => ipcRenderer.invoke("device:connect", payload),
   disconnectDevice: (deviceId) => ipcRenderer.invoke("device:disconnect", deviceId),
   getDeviceConnectionState: (deviceId) => ipcRenderer.invoke("device:get-connection-state", deviceId),
+  openDeviceTerminal: (payload) => ipcRenderer.invoke("device:terminal-open", payload),
+  writeDeviceTerminal: (deviceId, data) => ipcRenderer.invoke("device:terminal-write", { deviceId, data }),
+  resizeDeviceTerminal: (deviceId, size) => ipcRenderer.invoke("device:terminal-resize", { deviceId, ...size }),
+  closeDeviceTerminal: (deviceId) => ipcRenderer.invoke("device:terminal-close", deviceId),
   onDeviceConnectionStatus: (callback) => {
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on("device:connection-status", listener);
@@ -23,6 +27,22 @@ contextBridge.exposeInMainWorld("electron", {
 
     return () => {
       ipcRenderer.removeListener("device:connection-log", listener);
+    };
+  },
+  onDeviceTerminalData: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on("device:terminal-data", listener);
+
+    return () => {
+      ipcRenderer.removeListener("device:terminal-data", listener);
+    };
+  },
+  onDeviceTerminalExit: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on("device:terminal-exit", listener);
+
+    return () => {
+      ipcRenderer.removeListener("device:terminal-exit", listener);
     };
   },
   onUpdateStatus: (callback) => {

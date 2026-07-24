@@ -1,12 +1,13 @@
 import { Button } from "@/components/ui/button";
-import { getCsrfToken, useSession } from "next-auth/react";
+import { useSession } from "next-auth/react";
 import { PiGithubLogoBold, PiMetaLogoBold } from "react-icons/pi";
 import { useRouter } from "next/router";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 
-export default function Home({ csrfToken }) {
+export default function Home() {
     const router = useRouter();
     const { status } = useSession();
+    const [csrfToken, setCsrfToken] = useState("");
     const authError = typeof router.query?.error === "string" ? router.query.error : null;
 
     const authErrorMessage = authError === "OAuthAccountNotLinked"
@@ -20,6 +21,31 @@ export default function Home({ csrfToken }) {
             router.replace("/app/dashboard");
         }
     }, [router, status]);
+
+    useEffect(() => {
+        let cancelled = false;
+
+        async function loadCsrfToken() {
+            try {
+                const response = await fetch("/api/auth/csrf");
+                const payload = await response.json();
+
+                if (!cancelled) {
+                    setCsrfToken(payload?.csrfToken || "");
+                }
+            } catch (error) {
+                if (!cancelled) {
+                    setCsrfToken("");
+                }
+            }
+        }
+
+        loadCsrfToken();
+
+        return () => {
+            cancelled = true;
+        };
+    }, []);
 
     if (status === "loading") {
         return null;
@@ -48,14 +74,4 @@ export default function Home({ csrfToken }) {
             </Button>
         </form>
     </div>
-}
-
-export async function getServerSideProps(context) {
-    const csrfToken = await getCsrfToken(context);
-
-    return {
-        props: {
-            csrfToken: csrfToken || null,
-        },
-    };
 }

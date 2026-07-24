@@ -1,7 +1,5 @@
 import { useEffect, useState } from "react";
 import Layout from "@/components/layout";
-import {setProfile} from "@/redux/actions/main";
-import {connect} from "react-redux";
 import { useTheme } from "next-themes";
 import {
     Select,
@@ -10,12 +8,11 @@ import {
     SelectItem,
     SelectTrigger,
     SelectValue,
-} from "@/components/ui/select"
-import {Button} from "@/components/ui/button";
-import { Switch } from "@/components/ui/switch"
+} from "@/components/ui/select";
+import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
 
-function General(props) {
-    const { profile } = props;
+export default function General() {
     const { theme, setTheme } = useTheme();
     const [mounted, setMounted] = useState(false);
     const [appInfo, setAppInfo] = useState(null);
@@ -156,7 +153,7 @@ function General(props) {
     }
 
     return <Layout title="Settings">
-        <div className="flex flex-col gap-4 sm:max-w-[900px] w-full m-auto">
+        <div className="m-auto flex w-full flex-col gap-4 sm:max-w-[900px] p-6">
             <div>
                 <h2 className="font-semibold text-[10px] text-neutral-500 uppercase">
                     General
@@ -246,17 +243,5 @@ function General(props) {
                 </div>
             </div>
         </div>
-    </Layout>
+    </Layout>;
 }
-
-const mapStateToProps = (state) => {
-    return {
-        profile: state.profile,
-    };
-};
-
-const mapDispatchToProps = {
-    setProfile,
-};
-
-export default connect(mapStateToProps, mapDispatchToProps)(General);

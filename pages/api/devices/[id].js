@@ -1,7 +1,14 @@
 import db from "@/lib/db";
 import { Prisma } from "@prisma/client";
+import { getToken } from "next-auth/jwt";
 
 export default async function handler(req, res) {
+    const session = await getToken({ req, secret: process.env.NEXTAUTH_SECRET });
+
+    if (!session) {
+        return res.status(401).json({ message: "User not authenticated" });
+    }
+
     const { id } = req.query;
 
     if (!id || typeof id !== "string") {

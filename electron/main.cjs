@@ -1,6 +1,7 @@
 const { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, session } = require("electron");
 const { autoUpdater } = require("electron-updater");
 const { SerialPort } = require("serialport");
+const { Client: SshClient } = require("ssh2");
 const { execFile, spawn } = require("child_process");
 const os = require("os");
 const path = require("path");
@@ -21,7 +22,17 @@ const isDev = process.env.NODE_ENV === "development";
 const electronSessionPartition = "persist:placedv-desktop";
 const desktopAppName = "Placedv AI";
 const updateCheckIntervalMs = 5 * 60 * 1000;
+const sshTerminalInactivityTimeoutMs = 5 * 60 * 1000;
 const serialConnectionLogLimit = 200;
+const deviceTerminalSessions = new Map();
+const runtimeConfigFilename = "runtime-config.json";
+const requiredProductionEnvKeys = [
+  "NEXTAUTH_SECRET",
+  "GITHUB_CLIENT_ID",
+  "GITHUB_CLIENT_SECRET",
+  "FACEBOOK_CLIENT_ID",
+  "FACEBOOK_CLIENT_SECRET",
+];
 
 let mainWindow;
 let isQuitting = false;
@@ -70,11 +81,13 @@ function parseEnvFile(fileContent) {
 }
 
 function loadDesktopEnv() {
+  if (app.isPackaged) {
+    return;
+  }
+
   const candidatePaths = [
     path.join(process.cwd(), ".env"),
-    app?.isPackaged ? path.join(process.resourcesPath, ".env") : null,
-    app?.isPackaged ? path.join(process.resourcesPath, "app-standalone", ".env") : null,
-  ].filter(Boolean);
+  ];
 
   for (const candidatePath of candidatePaths) {
     if (!fs.existsSync(candidatePath)) {
@@ -101,63 +114,132 @@ function toPrismaSqliteUrl(filePath) {
   return `file:${filePath.split(path.sep).join("/")}`;
 }
 
+function getRuntimeConfigPath() {
+  return path.join(app.getPath("userData"), runtimeConfigFilename);
+}
+
+function getDefaultRuntimeConfig() {
+  return {
+    NEXTAUTH_SECRET: "",
+    GITHUB_CLIENT_ID: "",
+    GITHUB_CLIENT_SECRET: "",
+    FACEBOOK_CLIENT_ID: "",
+    FACEBOOK_CLIENT_SECRET: "",
+  };
+}
+
+function ensureRuntimeConfigFile() {
+  const runtimeConfigPath = getRuntimeConfigPath();
+
+  if (fs.existsSync(runtimeConfigPath)) {
+    return runtimeConfigPath;
+  }
+
+  fs.mkdirSync(path.dirname(runtimeConfigPath), { recursive: true });
+  fs.writeFileSync(
+    runtimeConfigPath,
+    `${JSON.stringify(getDefaultRuntimeConfig(), null, 2)}\n`,
+    "utf8",
+  );
+
+  return runtimeConfigPath;
+}
+
+function loadRuntimeConfigFromDisk() {
+  const runtimeConfigPath = ensureRuntimeConfigFile();
+
+  try {
+    const rawConfig = fs.readFileSync(runtimeConfigPath, "utf8");
+    const parsedConfig = JSON.parse(rawConfig);
+
+    if (!parsedConfig || typeof parsedConfig !== "object" || Array.isArray(parsedConfig)) {
+      throw new Error("Runtime config must contain a JSON object.");
+    }
+
+    return {
+      path: runtimeConfigPath,
+      values: parsedConfig,
+    };
+  } catch (error) {
+    throw new Error(`Unable to read runtime config at ${runtimeConfigPath}: ${error.message}`);
+  }
+}
+
+function applyRuntimeConfigEnv() {
+  if (!app.isPackaged) {
+    return;
+  }
+
+  const { path: runtimeConfigPath, values } = loadRuntimeConfigFromDisk();
+
+  for (const [key, value] of Object.entries(values)) {
+    if (process.env[key] === undefined && typeof value === "string" && value.trim()) {
+      process.env[key] = value.trim();
+    }
+  }
+
+  const missingKeys = requiredProductionEnvKeys.filter((key) => !String(process.env[key] || "").trim());
+
+  if (missingKeys.length > 0) {
+    throw new Error(
+      [
+        `Missing production runtime config keys in ${runtimeConfigPath}:`,
+        missingKeys.join(", "),
+        "",
+        `Fill ${runtimeConfigFilename} inside the app userData folder before starting the packaged app.`,
+      ].join("\n"),
+    );
+  }
+}
+
 function getLocalDatabasePath() {
   return path.join(app.getPath("userData"), "placedv-local.db");
 }
 
-function getBundledDatabaseTemplatePath() {
-  return path.join(process.resourcesPath, "placedv-local-template.db");
+function getPrismaSchemaPath() {
+  return path.join(app.getAppPath(), "prisma", "schema.prisma");
 }
 
-function copyBundledDatabaseTemplate(targetPath) {
-  const templatePath = getBundledDatabaseTemplatePath();
-
-  if (!fs.existsSync(templatePath)) {
-    throw new Error(`Bundled database template not found at ${templatePath}`);
-  }
-
-  fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-  fs.copyFileSync(templatePath, targetPath);
+function getPrismaCliPath() {
+  return require.resolve("prisma/build/index.js");
 }
 
-async function isDatabaseSchemaReady() {
-  try {
-    const { stdout } = await execFileAsync("sqlite3", [
-      getLocalDatabasePath(),
-      "SELECT name FROM sqlite_master WHERE type='table' AND name='AppSetting' LIMIT 1;",
-    ]);
+async function runPrismaCommand(args, options = {}) {
+  const cliPath = getPrismaCliPath();
+  const commandArgs = [cliPath, ...args];
 
-    return String(stdout || "").trim() === "AppSetting";
-  } catch (error) {
-    return false;
-  }
+  return execFileAsync(process.execPath, commandArgs, {
+    cwd: options.cwd || app.getAppPath(),
+    env: {
+      ...process.env,
+      ELECTRON_RUN_AS_NODE: "1",
+    },
+    maxBuffer: 1024 * 1024 * 10,
+  });
 }
 
 async function ensureLocalDatabaseSchema() {
   const databasePath = getLocalDatabasePath();
+  const schemaPath = getPrismaSchemaPath();
 
-  if (!fs.existsSync(databasePath)) {
-    copyBundledDatabaseTemplate(databasePath);
+  if (!fs.existsSync(schemaPath)) {
+    throw new Error(`Prisma schema not found at ${schemaPath}`);
   }
 
-  const isReady = await isDatabaseSchemaReady();
+  fs.mkdirSync(path.dirname(databasePath), { recursive: true });
+  process.env.DATABASE_URL = toPrismaSqliteUrl(databasePath);
 
-  if (isReady) {
-    return;
-  }
-
-  const backupPath = `${databasePath}.invalid-${Date.now()}.bak`;
-
-  if (fs.existsSync(databasePath)) {
-    fs.renameSync(databasePath, backupPath);
-  }
-
-  copyBundledDatabaseTemplate(databasePath);
-
-  const isReadyAfterRestore = await isDatabaseSchemaReady();
-
-  if (!isReadyAfterRestore) {
-    throw new Error("Unable to initialize the local SQLite database.");
+  try {
+    await runPrismaCommand([
+      "db",
+      "push",
+      "--skip-generate",
+      "--schema",
+      schemaPath,
+    ]);
+  } catch (error) {
+    const prismaMessage = error?.stderr || error?.stdout || error?.message || "Unknown Prisma bootstrap error.";
+    throw new Error(`Unable to initialize the local SQLite database.\n${String(prismaMessage).trim()}`);
   }
 }
 
@@ -317,12 +399,55 @@ function getDeviceConnectionRecord(deviceId) {
   return deviceConnections.get(deviceId) || null;
 }
 
+function getDeviceTerminalSession(deviceId) {
+  return deviceTerminalSessions.get(deviceId) || null;
+}
+
+function clearDeviceTerminalInactivityTimer(session) {
+  if (!session?.inactivityTimer) {
+    return;
+  }
+
+  clearTimeout(session.inactivityTimer);
+  session.inactivityTimer = null;
+}
+
+function refreshDeviceTerminalInactivityTimer(deviceId) {
+  const session = getDeviceTerminalSession(deviceId);
+
+  if (!session?.stream || session.transport !== "network") {
+    return;
+  }
+
+  clearDeviceTerminalInactivityTimer(session);
+  session.lastActivityAt = Date.now();
+  session.inactivityTimer = setTimeout(() => {
+    const activeSession = getDeviceTerminalSession(deviceId);
+
+    if (!activeSession || activeSession !== session) {
+      return;
+    }
+
+    broadcastDeviceTerminalData(
+      deviceId,
+      `\r\n[ssh] session closed after 5 minutes of inactivity\r\n`
+    );
+
+    closeDeviceTerminal(deviceId).catch(() => {});
+  }, sshTerminalInactivityTimeoutMs);
+}
+
 function getDeviceConnectionSnapshot(deviceId) {
   const record = getDeviceConnectionRecord(deviceId);
 
   if (!record) {
     return getDefaultDeviceConnectionSnapshot(deviceId);
   }
+
+  const serializedPort =
+    typeof record.port === "number"
+      ? record.port
+      : null;
 
   return {
     deviceId,
@@ -332,7 +457,7 @@ function getDeviceConnectionSnapshot(deviceId) {
     baudRate: record.baudRate ?? null,
     path: record.path ?? null,
     address: record.address ?? null,
-    port: record.port ?? null,
+    port: serializedPort,
     protocol: record.protocol ?? null,
     lastError: record.lastError ?? null,
   };
@@ -355,6 +480,29 @@ function broadcastDeviceConnectionLog(deviceId, message) {
     deviceId,
     message,
     timestamp: new Date().toISOString(),
+  });
+}
+
+function broadcastDeviceTerminalData(deviceId, data) {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+
+  mainWindow.webContents.send("device:terminal-data", {
+    deviceId,
+    data,
+  });
+}
+
+function broadcastDeviceTerminalExit(deviceId, exitCode = 0, signal = null) {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+
+  mainWindow.webContents.send("device:terminal-exit", {
+    deviceId,
+    exitCode,
+    signal,
   });
 }
 
@@ -413,6 +561,7 @@ function attachSerialConnectionListeners(record) {
     const nextMessage = Buffer.from(chunk).toString("utf8");
 
     if (nextMessage) {
+      broadcastDeviceTerminalData(deviceId, nextMessage);
       appendDeviceConnectionLog(record, nextMessage);
     }
   });
@@ -434,6 +583,7 @@ function attachSerialConnectionListeners(record) {
       port: null,
     });
     appendDeviceConnectionLog(record, `Disconnected from ${record.path}`);
+    broadcastDeviceTerminalExit(deviceId, 0, null);
   });
 }
 
@@ -652,6 +802,243 @@ async function disconnectDevice(deviceId) {
   });
 
   return getDeviceConnectionSnapshot(deviceId);
+}
+
+async function closeDeviceTerminal(deviceId) {
+  const session = getDeviceTerminalSession(deviceId);
+
+  if (session) {
+    clearDeviceTerminalInactivityTimer(session);
+    session.stream?.end?.();
+    session.client?.end?.();
+    deviceTerminalSessions.delete(deviceId);
+    return true;
+  }
+
+  const record = getDeviceConnectionRecord(deviceId);
+
+  if (record?.port && record.transport === "serial") {
+    await disconnectDevice(deviceId);
+    return true;
+  }
+
+  return false;
+}
+
+function writeDeviceTerminal(deviceId, data) {
+  const terminalSession = getDeviceTerminalSession(deviceId);
+
+  if (terminalSession?.stream) {
+    refreshDeviceTerminalInactivityTimer(deviceId);
+    terminalSession.stream.write(String(data || ""));
+    return true;
+  }
+
+  const record = getDeviceConnectionRecord(deviceId);
+
+  if (record?.port && record.transport === "serial") {
+    record.port.write(String(data || ""));
+    return true;
+  }
+
+  return false;
+}
+
+function resizeDeviceTerminal(deviceId, cols, rows) {
+  const session = getDeviceTerminalSession(deviceId);
+
+  if (!session?.stream) {
+    const record = getDeviceConnectionRecord(deviceId);
+    return Boolean(record?.port && record.transport === "serial");
+  }
+
+  const nextCols = Math.max(20, Number(cols) || 80);
+  const nextRows = Math.max(8, Number(rows) || 24);
+
+  session.cols = nextCols;
+  session.rows = nextRows;
+  session.stream.setWindow(nextRows, nextCols, 0, 0);
+  return true;
+}
+
+function getSshConnectionConfig(payload) {
+  const sshKeyPath = payload?.sshKeyPath || process.env.SSH_KEY_PATH;
+  const sshKey =
+    sshKeyPath && fs.existsSync(sshKeyPath)
+      ? fs.readFileSync(sshKeyPath, "utf8")
+      : undefined;
+
+  return {
+    host: payload.address,
+    port: Number(payload?.port) || 22,
+    username: payload?.sshUser || process.env.SSH_USER || "arduino",
+    password: payload?.password || undefined,
+    privateKey: sshKey,
+    agent: process.env.SSH_AUTH_SOCK || undefined,
+    tryKeyboard: true,
+    readyTimeout: 8000,
+    hostVerifier: () => true,
+  };
+}
+
+async function openSerialDeviceTerminal(payload) {
+  const deviceId = payload?.id;
+  const devicePath = payload?.path;
+  const baudRate = Number(payload?.baudRate) || 115200;
+  const existingRecord = getDeviceConnectionRecord(deviceId);
+
+  if (!deviceId || !devicePath) {
+    throw new Error("Missing serial device configuration.");
+  }
+
+  const reused = existingRecord?.state === "connected" && existingRecord?.path === devicePath;
+
+  await connectSerialDevice({
+    id: deviceId,
+    path: devicePath,
+    baudRate,
+  });
+
+  return {
+    deviceId,
+    path: devicePath,
+    baudRate,
+    transport: "serial",
+    reused,
+  };
+}
+
+async function openSshDeviceTerminal(payload) {
+  const deviceId = payload?.id;
+  const address = payload?.address;
+  const port = Number(payload?.port) || 22;
+  const sshUser = payload?.sshUser || process.env.SSH_USER || "arduino";
+  const cols = Math.max(20, Number(payload?.cols) || 120);
+  const rows = Math.max(8, Number(payload?.rows) || 24);
+
+  if (!deviceId || !address) {
+    throw new Error("Missing SSH device configuration.");
+  }
+
+  const existingSession = getDeviceTerminalSession(deviceId);
+
+  if (existingSession?.stream) {
+    resizeDeviceTerminal(deviceId, cols, rows);
+    return {
+      deviceId,
+      address,
+      port,
+      sshUser,
+      reused: true,
+    };
+  }
+
+  return new Promise((resolve, reject) => {
+    const client = new SshClient();
+    let settled = false;
+
+    const fail = (error) => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      client.end();
+      reject(error);
+    };
+
+    client.on("ready", () => {
+      client.shell(
+        {
+          term: "xterm-256color",
+          cols,
+          rows,
+        },
+        (error, stream) => {
+          if (error) {
+            fail(error);
+            return;
+          }
+
+          const sessionRecord = {
+            deviceId,
+            address,
+            port,
+            sshUser,
+            transport: "network",
+            client,
+            stream,
+            cols,
+            rows,
+            inactivityTimer: null,
+            lastActivityAt: Date.now(),
+          };
+
+          deviceTerminalSessions.set(deviceId, sessionRecord);
+          refreshDeviceTerminalInactivityTimer(deviceId);
+
+          stream.on("data", (data) => {
+            if (!mainWindow || mainWindow.isDestroyed()) {
+              return;
+            }
+
+            refreshDeviceTerminalInactivityTimer(deviceId);
+            broadcastDeviceTerminalData(deviceId, Buffer.from(data).toString("utf8"));
+          });
+
+          stream.on("close", () => {
+            clearDeviceTerminalInactivityTimer(sessionRecord);
+            deviceTerminalSessions.delete(deviceId);
+            broadcastDeviceTerminalExit(deviceId, 0, null);
+          });
+
+          stream.stderr?.on?.("data", (data) => {
+            if (!mainWindow || mainWindow.isDestroyed()) {
+              return;
+            }
+
+            refreshDeviceTerminalInactivityTimer(deviceId);
+            broadcastDeviceTerminalData(deviceId, Buffer.from(data).toString("utf8"));
+          });
+
+          client.on("close", () => {
+            clearDeviceTerminalInactivityTimer(sessionRecord);
+            deviceTerminalSessions.delete(deviceId);
+          });
+
+          settled = true;
+          resolve({
+            deviceId,
+            address,
+            port,
+            sshUser,
+            reused: false,
+          });
+        }
+      );
+    });
+
+    client.on("error", (error) => {
+      fail(error);
+    });
+
+    client.on("keyboard-interactive", (_name, _instructions, _lang, prompts, finish) => {
+      const passwordPrompt = prompts?.find((prompt) =>
+        String(prompt?.prompt || "")
+          .toLowerCase()
+          .includes("password")
+      );
+
+      if (payload?.password && passwordPrompt) {
+        finish([payload.password]);
+        return;
+      }
+
+      finish([]);
+    });
+
+    client.connect(getSshConnectionConfig(payload));
+  });
 }
 
 function detectDeviceTransport(port) {
@@ -1335,7 +1722,7 @@ async function startStandaloneServer(serverEntry, standaloneDir, serverPort) {
   process.env.HOSTNAME = localAppHost;
   process.env.NEXTAUTH_URL = `http://${localAppHost}:${serverPort}`;
   process.env.NEXTAUTH_URL_INTERNAL = `http://${localAppHost}:${serverPort}`;
-  process.env.DATABASE_URL = toPrismaSqliteUrl(getLocalDatabasePath());
+  applyRuntimeConfigEnv();
   await ensureLocalDatabaseSchema();
   process.chdir(standaloneDir);
 
@@ -1384,6 +1771,60 @@ ipcMain.handle("device:connect", async (_event, payload) => {
   }
 
   return connectSerialDevice(payload);
+});
+
+ipcMain.handle("device:terminal-open", async (_event, payload) => {
+  if (!payload || !payload.id) {
+    throw new Error("Invalid device payload.");
+  }
+
+  if (payload.address) {
+    try {
+      return await openSshDeviceTerminal(payload);
+    } catch (error) {
+      if (
+        error?.level === "client-authentication" &&
+        !payload?.password
+      ) {
+        return {
+          authRequired: true,
+          transport: "network",
+        };
+      }
+
+      throw error;
+    }
+  }
+
+  if (payload.path) {
+    return openSerialDeviceTerminal(payload);
+  }
+
+  throw new Error("This device does not expose a supported terminal transport.");
+});
+
+ipcMain.handle("device:terminal-write", async (_event, payload) => {
+  if (!payload?.deviceId) {
+    throw new Error("Invalid device id.");
+  }
+
+  return writeDeviceTerminal(payload.deviceId, payload.data);
+});
+
+ipcMain.handle("device:terminal-resize", async (_event, payload) => {
+  if (!payload?.deviceId) {
+    throw new Error("Invalid device id.");
+  }
+
+  return resizeDeviceTerminal(payload.deviceId, payload.cols, payload.rows);
+});
+
+ipcMain.handle("device:terminal-close", async (_event, deviceId) => {
+  if (!deviceId) {
+    throw new Error("Invalid device id.");
+  }
+
+  return closeDeviceTerminal(deviceId);
 });
 
 ipcMain.handle("device:disconnect", async (_event, deviceId) => {

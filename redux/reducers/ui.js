@@ -1,7 +1,15 @@
-import { ADD_SAVED_DEVICE, SET_SAVED_DEVICES, SET_SIDEBAR_WIDTH } from "@/redux/types";
+import {
+    ADD_SAVED_DEVICE,
+    SET_SAVED_DEVICES,
+    SET_DEVICE_TERMINAL_OPEN,
+    SET_SIDEBAR_WIDTH,
+    SET_TERMINAL_HEIGHT,
+} from "@/redux/types";
 
 const initialState = {
     sidebarWidth: 240,
+    terminalHeight: 320,
+    deviceTerminalOpenById: {},
     savedDevices: [],
 };
 
@@ -11,6 +19,19 @@ const ui = (state = initialState, action) => {
             return {
                 ...state,
                 sidebarWidth: action.payload,
+            };
+        case SET_TERMINAL_HEIGHT:
+            return {
+                ...state,
+                terminalHeight: action.payload,
+            };
+        case SET_DEVICE_TERMINAL_OPEN:
+            return {
+                ...state,
+                deviceTerminalOpenById: {
+                    ...state.deviceTerminalOpenById,
+                    [action.payload.deviceId]: action.payload.isOpen,
+                },
             };
         case ADD_SAVED_DEVICE: {
             const nextDevice = action.payload;
