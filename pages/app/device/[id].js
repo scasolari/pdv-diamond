@@ -1,4 +1,13 @@
 import Layout from "@/components/layout";
+import { Button } from "@/components/ui/button";
+import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
+} from "@/components/ui/dialog";
 import {
     ResizableHandle,
     ResizablePanel,
@@ -32,6 +41,26 @@ function isArduinoLikeDevice(device) {
     return searchable.includes("arduino");
 }
 
+function buildSavedDeviceSourceKey(device) {
+    if (!device) {
+        return "";
+    }
+
+    return [
+        device.sourceKey,
+        device.path,
+        device.address,
+        device.serialNumber,
+        device.pnpId,
+        device.mac,
+        device.interface,
+        device.protocol && device.address ? `${device.protocol}:${device.address}` : "",
+        device.vendorId && device.productId ? `${device.vendorId}:${device.productId}` : "",
+    ]
+        .filter(Boolean)
+        .join("|");
+}
+
 function buildDeviceMatchKeys(device) {
     if (!device) {
         return [];
@@ -43,6 +72,10 @@ function buildDeviceMatchKeys(device) {
         device.path,
         device.address,
         device.serialNumber,
+        device.pnpId,
+        device.mac,
+        device.interface,
+        device.protocol && device.address ? `${device.protocol}:${device.address}` : "",
         device.vendorId && device.productId ? `${device.vendorId}:${device.productId}` : "",
     ].filter(Boolean);
 }
@@ -81,6 +114,64 @@ function findPreferredNetworkSibling(savedDevice, detectedDevices) {
     return null;
 }
 
+function getResolvedDetectedDevice(savedDevice, detectedDevices) {
+    const detectedMatch = findDetectedDeviceMatch(savedDevice, detectedDevices);
+    const preferredNetworkSibling = detectedMatch?.address
+        ? null
+        : findPreferredNetworkSibling(savedDevice, detectedDevices);
+
+    return detectedMatch || preferredNetworkSibling || null;
+}
+
+function isSavedDeviceAvailable(savedDevice, detectedDevices) {
+    if (!savedDevice || !Array.isArray(detectedDevices) || !detectedDevices.length) {
+        return false;
+    }
+
+    const detectedKeys = new Set();
+
+    detectedDevices.forEach((device) => {
+        [
+            device.id,
+            device.path,
+            device.address,
+            device.serialNumber,
+            device.pnpId,
+            device.mac,
+            device.interface,
+            device.protocol && device.address ? `${device.protocol}:${device.address}` : "",
+            device.vendorId && device.productId ? `${device.vendorId}:${device.productId}` : "",
+            buildSavedDeviceSourceKey(device),
+        ]
+            .filter(Boolean)
+            .forEach((key) => detectedKeys.add(key));
+    });
+
+    return [
+        savedDevice.sourceKey,
+        savedDevice.path,
+        savedDevice.address,
+        savedDevice.serialNumber,
+        savedDevice.pnpId,
+        savedDevice.mac,
+        savedDevice.interface,
+        savedDevice.protocol && savedDevice.address ? `${savedDevice.protocol}:${savedDevice.address}` : "",
+        savedDevice.vendorId && savedDevice.productId ? `${savedDevice.vendorId}:${savedDevice.productId}` : "",
+        buildSavedDeviceSourceKey(savedDevice),
+    ]
+        .filter(Boolean)
+        .some((key) => detectedKeys.has(key));
+}
+
+function getDetectedDevicesList(detectedResult) {
+    return [
+        ...(detectedResult?.groups?.usb || []),
+        ...(detectedResult?.groups?.bluetooth || []),
+        ...(detectedResult?.groups?.network || []),
+        ...(detectedResult?.connected || []),
+    ];
+}
+
 function DevicePage({
     terminalHeight,
     deviceTerminalOpenById,
@@ -95,11 +186,79 @@ function DevicePage({
     const [isTerminalOpen, setIsTerminalOpen] = useState(false);
     const [terminalError, setTerminalError] = useState("");
     const [availabilityMessage, setAvailabilityMessage] = useState("");
+    const [unavailableDevice, setUnavailableDevice] = useState(null);
     const pageContainerRef = useRef(null);
     const panelGroupRef = useRef(null);
     const terminalContainerRef = useRef(null);
     const hasLoadedTerminalHeight = useRef(false);
+    const isDeviceCurrentlyAvailableRef = useRef(true);
+    const deviceRef = useRef(null);
+    const isTerminalOpenRef = useRef(false);
     const [groupHeight, setGroupHeight] = useState(0);
+
+    useEffect(() => {
+        deviceRef.current = device;
+    }, [device]);
+
+    useEffect(() => {
+        isTerminalOpenRef.current = isTerminalOpen;
+    }, [isTerminalOpen]);
+
+    const deviceAvailabilitySignature = useMemo(() => {
+        if (!device?.id) {
+            return "";
+        }
+
+        return [
+            device.id,
+            device.sourceKey,
+            device.path,
+            device.address,
+            device.serialNumber,
+            device.pnpId,
+            device.mac,
+            device.interface,
+            device.protocol,
+            device.vendorId,
+            device.productId,
+        ].join("|");
+    }, [
+        device?.address,
+        device?.id,
+        device?.path,
+        device?.pnpId,
+        device?.mac,
+        device?.interface,
+        device?.protocol,
+        device?.productId,
+        device?.serialNumber,
+        device?.sourceKey,
+        device?.vendorId,
+    ]);
+
+    const terminalConnectionSignature = useMemo(() => {
+        if (!device?.id) {
+            return "";
+        }
+
+        return [
+            device.id,
+            device.address,
+            device.port,
+            device.path,
+            device.baudRate,
+            device.transport,
+            device.protocol,
+        ].join("|");
+    }, [
+        device?.address,
+        device?.baudRate,
+        device?.id,
+        device?.path,
+        device?.port,
+        device?.protocol,
+        device?.transport,
+    ]);
 
     useEffect(() => {
         const updateHeight = () => {
@@ -259,17 +418,8 @@ function DevicePage({
                 if (window?.electron?.listDevices) {
                     try {
                         const detectedResult = await window.electron.listDevices();
-                        const detectedDevices = [
-                            ...(detectedResult?.groups?.usb || []),
-                            ...(detectedResult?.groups?.bluetooth || []),
-                            ...(detectedResult?.groups?.network || []),
-                            ...(detectedResult?.connected || []),
-                        ];
-                        const detectedMatch = findDetectedDeviceMatch(payload, detectedDevices);
-                        const preferredNetworkSibling = detectedMatch?.address
-                            ? null
-                            : findPreferredNetworkSibling(payload, detectedDevices);
-                        const resolvedDevice = detectedMatch || preferredNetworkSibling;
+                        const detectedDevices = getDetectedDevicesList(detectedResult);
+                        const resolvedDevice = getResolvedDetectedDevice(payload, detectedDevices);
 
                         if (resolvedDevice) {
                             nextDevice = {
@@ -307,6 +457,147 @@ function DevicePage({
     }, [deviceTerminalOpenById, id, router.isReady]);
 
     useEffect(() => {
+        if (!device?.id || !window?.electron?.listDevices) {
+            isDeviceCurrentlyAvailableRef.current = true;
+            return;
+        }
+
+        let cancelled = false;
+        const deviceId = device.id;
+
+        const checkDeviceAvailability = async () => {
+            try {
+                const detectedResult = await window.electron.listDevices();
+
+                if (cancelled) {
+                    return;
+                }
+
+                const currentDevice = deviceRef.current;
+                if (!currentDevice || currentDevice.id !== deviceId) {
+                    return;
+                }
+
+                const detectedDevices = getDetectedDevicesList(detectedResult);
+                const resolvedDevice = getResolvedDetectedDevice(currentDevice, detectedDevices);
+                let isAvailable = isSavedDeviceAvailable(currentDevice, detectedDevices) || Boolean(resolvedDevice);
+                const wasAvailable = isDeviceCurrentlyAvailableRef.current;
+
+                if (isAvailable && resolvedDevice) {
+                    setDevice((currentDevice) => {
+                        if (!currentDevice || currentDevice.id !== deviceId) {
+                            return currentDevice;
+                        }
+
+                        const nextAddress = resolvedDevice.address ?? currentDevice.address ?? null;
+                        const nextPort = resolvedDevice.port ?? currentDevice.port ?? null;
+                        const nextProtocol = resolvedDevice.protocol ?? currentDevice.protocol ?? null;
+                        const nextPath = resolvedDevice.path ?? currentDevice.path ?? null;
+
+                        if (
+                            nextAddress === (currentDevice.address ?? null) &&
+                            nextPort === (currentDevice.port ?? null) &&
+                            nextProtocol === (currentDevice.protocol ?? null) &&
+                            nextPath === (currentDevice.path ?? null)
+                        ) {
+                            return currentDevice;
+                        }
+
+                        return {
+                            ...currentDevice,
+                            address: nextAddress,
+                            port: nextPort,
+                            protocol: nextProtocol,
+                            path: nextPath,
+                        };
+                    });
+                }
+
+                if (!isAvailable && wasAvailable) {
+                    await new Promise((resolve) => {
+                        window.setTimeout(resolve, 1000);
+                    });
+
+                    if (cancelled) {
+                        return;
+                    }
+
+                    const retryResult = await window.electron.listDevices();
+
+                    if (cancelled) {
+                        return;
+                    }
+
+                    const retryDetectedDevices = getDetectedDevicesList(retryResult);
+                    const retryResolvedDevice = getResolvedDetectedDevice(currentDevice, retryDetectedDevices);
+                    isAvailable =
+                        isSavedDeviceAvailable(currentDevice, retryDetectedDevices) ||
+                        Boolean(retryResolvedDevice);
+
+                    if (isAvailable) {
+                        if (retryResolvedDevice) {
+                            setDevice((latestDevice) => {
+                                if (!latestDevice || latestDevice.id !== deviceId) {
+                                    return latestDevice;
+                                }
+
+                                const nextAddress = retryResolvedDevice.address ?? latestDevice.address ?? null;
+                                const nextPort = retryResolvedDevice.port ?? latestDevice.port ?? null;
+                                const nextProtocol = retryResolvedDevice.protocol ?? latestDevice.protocol ?? null;
+                                const nextPath = retryResolvedDevice.path ?? latestDevice.path ?? null;
+
+                                if (
+                                    nextAddress === (latestDevice.address ?? null) &&
+                                    nextPort === (latestDevice.port ?? null) &&
+                                    nextProtocol === (latestDevice.protocol ?? null) &&
+                                    nextPath === (latestDevice.path ?? null)
+                                ) {
+                                    return latestDevice;
+                                }
+
+                                return {
+                                    ...latestDevice,
+                                    address: nextAddress,
+                                    port: nextPort,
+                                    protocol: nextProtocol,
+                                    path: nextPath,
+                                };
+                            });
+                        }
+
+                        isDeviceCurrentlyAvailableRef.current = true;
+                        return;
+                    }
+
+                    if (isTerminalOpenRef.current) {
+                        setDeviceTerminalOpen(deviceId, false);
+                        window.electron?.closeDeviceTerminal?.(deviceId).catch(() => {});
+                        setIsTerminalOpen(false);
+                        setTerminalError("");
+                    }
+
+                    setUnavailableDevice({
+                        ...currentDevice,
+                        status: "offline",
+                    });
+                }
+
+                isDeviceCurrentlyAvailableRef.current = isAvailable;
+            } catch (error) {
+                return;
+            }
+        };
+
+        checkDeviceAvailability();
+        const intervalId = window.setInterval(checkDeviceAvailability, 30000);
+
+        return () => {
+            cancelled = true;
+            window.clearInterval(intervalId);
+        };
+    }, [device?.id, deviceAvailabilitySignature, setDeviceTerminalOpen]);
+
+    useEffect(() => {
         if (!isTerminalOpen || !terminalContainerRef.current) {
             return;
         }
@@ -324,6 +615,8 @@ function DevicePage({
         let isRemoteConnected = false;
         let isConnecting = false;
         let passwordBuffer = "";
+        let resizeFrameId = null;
+        let initialFitFrameId = null;
         const sshAddress = device?.address;
         const sshPort = device?.port;
 
@@ -332,6 +625,9 @@ function DevicePage({
                 disposed ||
                 !fitAddon ||
                 !terminal ||
+                !terminal.element ||
+                !terminal.textarea ||
+                !terminal.element.isConnected ||
                 !terminalElement?.isConnected ||
                 terminalElement.clientWidth <= 0 ||
                 terminalElement.clientHeight <= 0
@@ -344,6 +640,20 @@ function DevicePage({
                 return true;
             } catch (error) {
                 return false;
+            }
+        }
+
+        function cancelScheduledResize() {
+            if (resizeFrameId) {
+                window.cancelAnimationFrame(resizeFrameId);
+                resizeFrameId = null;
+            }
+        }
+
+        function cancelInitialFit() {
+            if (initialFitFrameId) {
+                window.cancelAnimationFrame(initialFitFrameId);
+                initialFitFrameId = null;
             }
         }
 
@@ -435,6 +745,18 @@ function DevicePage({
                     return;
                 }
 
+                if (session?.error) {
+                    isConnecting = false;
+                    isRemoteConnected = false;
+                    setDeviceTerminalOpen(device.id, false);
+                    setIsTerminalOpen(false);
+                    setTerminalError("");
+                    setAvailabilityMessage(
+                        session?.message || "SSH connection is not available for this device."
+                    );
+                    return;
+                }
+
                 isRemoteConnected = true;
                 isConnecting = false;
 
@@ -482,7 +804,8 @@ function DevicePage({
             terminal.loadAddon(fitAddon);
             terminal.open(terminalElement);
             safeFit();
-            window.requestAnimationFrame(() => {
+            initialFitFrameId = window.requestAnimationFrame(() => {
+                initialFitFrameId = null;
                 safeFit();
             });
 
@@ -514,29 +837,40 @@ function DevicePage({
             await openSshSession();
 
             handleResize = () => {
-                if (!fitAddon || !terminal) {
-                    return;
-                }
+                cancelScheduledResize();
 
-                if (!safeFit()) {
-                    return;
-                }
+                resizeFrameId = window.requestAnimationFrame(() => {
+                    resizeFrameId = null;
 
-                if (!isRemoteConnected) {
-                    return;
-                }
+                    if (disposed || !fitAddon || !terminal || !terminal.element?.isConnected) {
+                        return;
+                    }
 
-                window.electron.resizeDeviceTerminal(device.id, {
-                    cols: terminal.cols,
-                    rows: terminal.rows,
-                }).catch(() => {});
+                    if (!safeFit()) {
+                        return;
+                    }
+
+                    if (!isRemoteConnected) {
+                        return;
+                    }
+
+                    window.electron.resizeDeviceTerminal(device.id, {
+                        cols: terminal.cols,
+                        rows: terminal.rows,
+                    }).catch(() => {});
+                });
             };
+
+            const observeTarget = terminalElement.parentElement || terminalElement;
 
             window.addEventListener("resize", handleResize);
             resizeObserver = new ResizeObserver(() => {
-                window.requestAnimationFrame(handleResize);
+                if (!fitAddon || !terminal) {
+                    return;
+                }
+                handleResize();
             });
-            resizeObserver.observe(terminalElement);
+            resizeObserver.observe(observeTarget);
         }
 
         mountTerminal().catch((error) => {
@@ -551,6 +885,8 @@ function DevicePage({
             disposeRemoteInput();
             disposePasswordInput();
             resizeObserver?.disconnect();
+            cancelScheduledResize();
+            cancelInitialFit();
 
             if (handleResize) {
                 window.removeEventListener("resize", handleResize);
@@ -558,11 +894,20 @@ function DevicePage({
 
             if (terminal) {
                 terminal.dispose();
+                terminal = null;
+                fitAddon = null;
             }
 
             terminalElement.innerHTML = "";
         };
-    }, [device, isTerminalOpen]);
+    }, [
+        device?.address,
+        device?.id,
+        device?.port,
+        isTerminalOpen,
+        setDeviceTerminalOpen,
+        terminalConnectionSignature,
+    ]);
 
     return (
         <Layout title={device?.alias || device?.name || <div>
@@ -629,7 +974,7 @@ function DevicePage({
                                                 {terminalError}
                                             </div>
                                         ) : null}
-                                        <div ref={terminalContainerRef} className="h-full w-full overflow-hidden bg-black" />
+                                        <div ref={terminalContainerRef} className="h-full w-full overflow-hidden bg-black p-2" />
                                     </div>
                                 </div>
                             </ResizablePanel>
@@ -637,6 +982,33 @@ function DevicePage({
                     ) : null}
                 </ResizablePanelGroup>
             </div>
+            <Dialog
+                open={Boolean(unavailableDevice)}
+                onOpenChange={(nextOpen) => {
+                    if (!nextOpen) {
+                        setUnavailableDevice(null);
+                    }
+                }}
+            >
+                <DialogContent className="sm:max-w-md p-3">
+                    <DialogHeader>
+                        <DialogTitle className="font-semibold text-sm">
+                            Device offline
+                        </DialogTitle>
+                        <DialogDescription className="font-semibold text-xs">
+                            {(unavailableDevice?.alias || unavailableDevice?.name || "This device")} is no longer available. Check the device connection and try again.
+                        </DialogDescription>
+                    </DialogHeader>
+                    <DialogFooter>
+                        <Button
+                            onClick={() => setUnavailableDevice(null)}
+                            className="rounded-lg h-7 !font-semibold !text-xs border bg-white hover:bg-neutral-50 text-black dark:text-white dark:bg-neutral-800 dark:border-neutral-700"
+                        >
+                            OK
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
         </Layout>
     );
 }

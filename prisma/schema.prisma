@@ -77,6 +77,8 @@ model SavedDevice {
   vendorId     String?
   productId    String?
   pnpId        String?
+  mac          String?
+  interface    String?
   archivedAt   DateTime?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt

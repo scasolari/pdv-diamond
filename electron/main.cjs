@@ -7,6 +7,8 @@ const os = require("os");
 const path = require("path");
 const net = require("net");
 const fs = require("fs");
+const crypto = require("crypto");
+const { DatabaseSync } = require("node:sqlite");
 const { promisify } = require("util");
 
 const execFileAsync = promisify(execFile);
@@ -26,6 +28,7 @@ const sshTerminalInactivityTimeoutMs = 5 * 60 * 1000;
 const serialConnectionLogLimit = 200;
 const deviceTerminalSessions = new Map();
 const runtimeConfigFilename = "runtime-config.json";
+const sshKnownHostsFilename = "ssh-known-hosts.json";
 const requiredProductionEnvKeys = [
   "NEXTAUTH_SECRET",
 ];
@@ -122,6 +125,49 @@ function toPrismaSqliteUrl(filePath) {
 
 function getRuntimeConfigPath() {
   return path.join(app.getPath("userData"), runtimeConfigFilename);
+}
+
+function getKnownHostsPath() {
+  return path.join(app.getPath("userData"), sshKnownHostsFilename);
+}
+
+function loadKnownHosts() {
+  const knownHostsPath = getKnownHostsPath();
+
+  if (!fs.existsSync(knownHostsPath)) {
+    return {};
+  }
+
+  try {
+    const parsed = JSON.parse(fs.readFileSync(knownHostsPath, "utf8"));
+
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {};
+    }
+
+    return parsed;
+  } catch (error) {
+    console.error(`Failed to read known hosts file at ${knownHostsPath}:`, error);
+    return {};
+  }
+}
+
+function saveKnownHosts(knownHosts) {
+  const knownHostsPath = getKnownHostsPath();
+  fs.mkdirSync(path.dirname(knownHostsPath), { recursive: true });
+  fs.writeFileSync(knownHostsPath, `${JSON.stringify(knownHosts, null, 2)}\n`, "utf8");
+}
+
+function getKnownHostKey(host, port) {
+  return `${host}:${port}`;
+}
+
+function getSshHostFingerprint(hostKey) {
+  return `SHA256:${crypto
+    .createHash("sha256")
+    .update(hostKey)
+    .digest("base64")
+    .replace(/=+$/g, "")}`;
 }
 
 function getDefaultRuntimeConfig() {
@@ -245,50 +291,66 @@ function getLocalDatabasePath() {
   return path.join(app.getPath("userData"), "placedv-local.db");
 }
 
-function getPrismaSchemaPath() {
-  return path.join(app.getAppPath(), "prisma", "schema.prisma");
-}
+async function bootstrapLocalDatabaseWithSqlite(databasePath) {
+  const statements = [
+    "PRAGMA journal_mode = WAL;",
+    "CREATE TABLE IF NOT EXISTS `User` (`id` TEXT NOT NULL PRIMARY KEY, `name` TEXT, `email` TEXT, `emailVerified` DATETIME, `image` TEXT, `admin` BOOLEAN NOT NULL DEFAULT false, `is2FAEnabled` BOOLEAN NOT NULL DEFAULT false, `is2FAActive` BOOLEAN NOT NULL DEFAULT false, `twoFASecret` TEXT);",
+    "CREATE UNIQUE INDEX IF NOT EXISTS `User_email_key` ON `User`(`email`);",
+    "CREATE TABLE IF NOT EXISTS `Session` (`id` TEXT NOT NULL PRIMARY KEY, `sessionToken` TEXT NOT NULL, `userId` TEXT NOT NULL, `expires` DATETIME NOT NULL);",
+    "CREATE UNIQUE INDEX IF NOT EXISTS `Session_sessionToken_key` ON `Session`(`sessionToken`);",
+    "CREATE TABLE IF NOT EXISTS `Account` (`id` TEXT NOT NULL PRIMARY KEY, `userId` TEXT NOT NULL, `type` TEXT NOT NULL, `provider` TEXT NOT NULL, `providerAccountId` TEXT NOT NULL, `refresh_token` TEXT, `access_token` TEXT, `expires_at` INTEGER, `token_type` TEXT, `scope` TEXT, `id_token` TEXT, `session_state` TEXT);",
+    "CREATE UNIQUE INDEX IF NOT EXISTS `Account_provider_providerAccountId_key` ON `Account`(`provider`, `providerAccountId`);",
+    "CREATE TABLE IF NOT EXISTS `VerificationToken` (`identifier` TEXT NOT NULL, `token` TEXT NOT NULL, `expires` DATETIME NOT NULL);",
+    "CREATE UNIQUE INDEX IF NOT EXISTS `VerificationToken_token_key` ON `VerificationToken`(`token`);",
+    "CREATE UNIQUE INDEX IF NOT EXISTS `VerificationToken_identifier_token_key` ON `VerificationToken`(`identifier`, `token`);",
+    "CREATE TABLE IF NOT EXISTS `AppSetting` (`key` TEXT NOT NULL PRIMARY KEY, `value` TEXT NOT NULL, `updatedAt` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP);",
+    "CREATE TABLE IF NOT EXISTS `SavedDevice` (`id` TEXT NOT NULL PRIMARY KEY, `sourceKey` TEXT NOT NULL, `alias` TEXT NOT NULL, `name` TEXT NOT NULL, `baudRate` INTEGER NOT NULL DEFAULT 115200, `transport` TEXT NOT NULL, `type` TEXT NOT NULL, `source` TEXT NOT NULL, `path` TEXT, `address` TEXT, `port` INTEGER, `protocol` TEXT, `manufacturer` TEXT, `serialNumber` TEXT, `vendorId` TEXT, `productId` TEXT, `pnpId` TEXT, `mac` TEXT, `interface` TEXT, `archivedAt` DATETIME, `createdAt` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, `updatedAt` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP);",
+    "CREATE UNIQUE INDEX IF NOT EXISTS `SavedDevice_sourceKey_key` ON `SavedDevice`(`sourceKey`);",
+  ];
+  const migrationStatements = [
+    "ALTER TABLE `SavedDevice` ADD COLUMN `mac` TEXT;",
+    "ALTER TABLE `SavedDevice` ADD COLUMN `interface` TEXT;",
+  ];
+  let database;
 
-function getPrismaCliPath() {
-  return require.resolve("prisma/build/index.js");
-}
+  try {
+    database = new DatabaseSync(databasePath);
 
-async function runPrismaCommand(args, options = {}) {
-  const cliPath = getPrismaCliPath();
-  const commandArgs = [cliPath, ...args];
+    for (const statement of statements) {
+      database.exec(statement);
+    }
 
-  return execFileAsync(process.execPath, commandArgs, {
-    cwd: options.cwd || app.getAppPath(),
-    env: {
-      ...process.env,
-      ELECTRON_RUN_AS_NODE: "1",
-    },
-    maxBuffer: 1024 * 1024 * 10,
-  });
+    for (const statement of migrationStatements) {
+      try {
+        database.exec(statement);
+      } catch (error) {
+        if (!String(error?.message || "").toLowerCase().includes("duplicate column name")) {
+          throw error;
+        }
+      }
+    }
+  } catch (error) {
+    throw new Error(`Unable to initialize SQLite schema at ${databasePath}: ${error.message}`);
+  } finally {
+    try {
+      database?.close();
+    } catch (error) {
+      console.error(`Failed to close SQLite bootstrap database at ${databasePath}:`, error);
+    }
+  }
 }
 
 async function ensureLocalDatabaseSchema() {
   const databasePath = getLocalDatabasePath();
-  const schemaPath = getPrismaSchemaPath();
-
-  if (!fs.existsSync(schemaPath)) {
-    throw new Error(`Prisma schema not found at ${schemaPath}`);
-  }
 
   fs.mkdirSync(path.dirname(databasePath), { recursive: true });
   process.env.DATABASE_URL = toPrismaSqliteUrl(databasePath);
 
   try {
-    await runPrismaCommand([
-      "db",
-      "push",
-      "--skip-generate",
-      "--schema",
-      schemaPath,
-    ]);
+    await bootstrapLocalDatabaseWithSqlite(databasePath);
   } catch (error) {
-    const prismaMessage = error?.stderr || error?.stdout || error?.message || "Unknown Prisma bootstrap error.";
-    throw new Error(`Unable to initialize the local SQLite database.\n${String(prismaMessage).trim()}`);
+    const bootstrapMessage = error?.message || "Unknown SQLite bootstrap error.";
+    throw new Error(`Unable to initialize the local SQLite database.\n${String(bootstrapMessage).trim()}`);
   }
 }
 
@@ -916,17 +978,76 @@ function getSshConnectionConfig(payload) {
     sshKeyPath && fs.existsSync(sshKeyPath)
       ? fs.readFileSync(sshKeyPath, "utf8")
       : undefined;
+  const host = payload.address;
+  const port = Number(payload?.port) || 22;
+  const knownHostKey = getKnownHostKey(host, port);
 
   return {
-    host: payload.address,
-    port: Number(payload?.port) || 22,
+    host,
+    port,
     username: payload?.sshUser || process.env.SSH_USER || "arduino",
     password: payload?.password || undefined,
     privateKey: sshKey,
     agent: process.env.SSH_AUTH_SOCK || undefined,
     tryKeyboard: true,
     readyTimeout: 8000,
-    hostVerifier: () => true,
+    hostVerifier: (hostKey) => {
+      const fingerprint = getSshHostFingerprint(hostKey);
+      const knownHosts = loadKnownHosts();
+      const existingEntry = knownHosts[knownHostKey];
+
+      if (!existingEntry) {
+        knownHosts[knownHostKey] = {
+          fingerprint,
+          addedAt: new Date().toISOString(),
+        };
+        saveKnownHosts(knownHosts);
+        return true;
+      }
+
+      return existingEntry.fingerprint === fingerprint;
+    },
+  };
+}
+
+function normalizeSshOpenError(error) {
+  const message = String(error?.message || error || "");
+  const normalizedMessage = message.toLowerCase();
+
+  if (
+    normalizedMessage.includes("connection lost before handshake") ||
+    normalizedMessage.includes("econnreset") ||
+    normalizedMessage.includes("socket hang up")
+  ) {
+    return {
+      expected: true,
+      message: "SSH connection is not available on this device right now.",
+    };
+  }
+
+  if (
+    normalizedMessage.includes("timed out") ||
+    normalizedMessage.includes("etimedout") ||
+    normalizedMessage.includes("ehostunreach") ||
+    normalizedMessage.includes("enotfound") ||
+    normalizedMessage.includes("econnrefused")
+  ) {
+    return {
+      expected: true,
+      message: "Unable to reach the SSH service on this device.",
+    };
+  }
+
+  if (normalizedMessage.includes("all configured authentication methods failed")) {
+    return {
+      expected: true,
+      message: "SSH authentication failed.",
+    };
+  }
+
+  return {
+    expected: false,
+    message,
   };
 }
 
@@ -1838,6 +1959,17 @@ ipcMain.handle("device:terminal-open", async (_event, payload) => {
         return {
           authRequired: true,
           transport: "network",
+        };
+      }
+
+      const normalizedError = normalizeSshOpenError(error);
+
+      if (normalizedError.expected) {
+        return {
+          error: true,
+          expected: true,
+          transport: "network",
+          message: normalizedError.message,
         };
       }
 

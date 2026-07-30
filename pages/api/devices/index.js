@@ -49,6 +49,8 @@ export default async function handler(req, res) {
                 vendorId: payload.vendorId ?? null,
                 productId: payload.productId ?? null,
                 pnpId: payload.pnpId ?? null,
+                mac: payload.mac ?? null,
+                interface: payload.interface ?? null,
                 archivedAt: null,
             },
             create: {
@@ -68,6 +70,8 @@ export default async function handler(req, res) {
                 vendorId: payload.vendorId ?? null,
                 productId: payload.productId ?? null,
                 pnpId: payload.pnpId ?? null,
+                mac: payload.mac ?? null,
+                interface: payload.interface ?? null,
                 archivedAt: null,
             },
         });

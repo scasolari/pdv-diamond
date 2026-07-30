@@ -48,6 +48,10 @@ function buildSavedDeviceSourceKey(device) {
         device.path,
         device.address,
         device.serialNumber,
+        device.pnpId,
+        device.mac,
+        device.interface,
+        device.protocol && device.address ? `${device.protocol}:${device.address}` : "",
         device.vendorId && device.productId ? `${device.vendorId}:${device.productId}` : "",
     ]
         .filter(Boolean)
@@ -63,6 +67,10 @@ function createSavedDeviceStatusMap(savedDevices, detectedDevices) {
             device.path,
             device.address,
             device.serialNumber,
+            device.pnpId,
+            device.mac,
+            device.interface,
+            device.protocol && device.address ? `${device.protocol}:${device.address}` : "",
             device.vendorId && device.productId ? `${device.vendorId}:${device.productId}` : "",
         ].filter(Boolean);
 
@@ -78,6 +86,10 @@ function createSavedDeviceStatusMap(savedDevices, detectedDevices) {
                 detectedKeys.has(device.path) ||
                 detectedKeys.has(device.address) ||
                 detectedKeys.has(device.serialNumber) ||
+                detectedKeys.has(device.pnpId) ||
+                detectedKeys.has(device.mac) ||
+                detectedKeys.has(device.interface) ||
+                detectedKeys.has(device.protocol && device.address ? `${device.protocol}:${device.address}` : "") ||
                 detectedKeys.has(device.vendorId && device.productId ? `${device.vendorId}:${device.productId}` : "") ||
                 detectedKeys.has(statusKey);
 
@@ -94,6 +106,10 @@ function buildSavedDevicesStatusSignature(savedDevices) {
             device.path,
             device.address,
             device.serialNumber,
+            device.pnpId,
+            device.mac,
+            device.interface,
+            device.protocol,
             device.vendorId,
             device.productId,
         ].join("|"))
@@ -176,6 +192,10 @@ function NavigationBar(props) {
             path: device.path,
             address: device.address,
             serialNumber: device.serialNumber,
+            pnpId: device.pnpId,
+            mac: device.mac,
+            interface: device.interface,
+            protocol: device.protocol,
             vendorId: device.vendorId,
             productId: device.productId,
         })),
@@ -351,6 +371,8 @@ function NavigationBar(props) {
                     vendorId: selectedDevice.vendorId ?? null,
                     productId: selectedDevice.productId ?? null,
                     pnpId: selectedDevice.pnpId ?? null,
+                    mac: selectedDevice.mac ?? null,
+                    interface: selectedDevice.interface ?? null,
                 }),
             });
             const savedDevice = await response.json();

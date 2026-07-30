@@ -1,6 +1,14 @@
 import db from "@/lib/db";
 import { getToken } from "next-auth/jwt";
 
+const ALLOWED_SETTING_KEYS = new Set([
+    "theme",
+    "sidebarWidth",
+    "deviceTerminalHeight",
+    "deleteDeviceConfirmation",
+    "archiveDeviceConfirmation",
+]);
+
 export default async function handler(req, res) {
     const session = await getToken({ req, secret: process.env.NEXTAUTH_SECRET });
 
@@ -12,6 +20,10 @@ export default async function handler(req, res) {
 
     if (!key || typeof key !== "string") {
         return res.status(400).json({ message: "Invalid setting key." });
+    }
+
+    if (!ALLOWED_SETTING_KEYS.has(key)) {
+        return res.status(403).json({ message: "Setting key is not allowed." });
     }
 
     if (req.method === "GET") {

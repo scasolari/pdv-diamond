@@ -38,3 +38,8 @@ next-env.d.ts
 
 prisma/migrations
 /dist
+prisma/placedv-local.db
+prisma/prisma/placedv-local.db
+*.db-journal
+*.db-wal
+*.db-shm
