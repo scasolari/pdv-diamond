@@ -33,10 +33,13 @@ import {
 import {Button} from "@/components/ui/button";
 import {Input} from "@/components/ui/input";
 
-const DEVICE_STATUS_REFRESH_INTERVAL_MS = 30000;
+const DEVICE_STATUS_REFRESH_INTERVAL_MS = 3000;
+const DEVICE_STATUS_MISS_THRESHOLD = 3;
 let savedDeviceStatusCache = {};
+let savedDeviceAvailabilityCache = {};
 let savedDeviceStatusLastCheckedAt = 0;
 let savedDeviceStatusInFlightPromise = null;
+let savedDeviceStatusMisses = {};
 
 function buildSavedDeviceSourceKey(device) {
     if (!device) {
@@ -58,44 +61,110 @@ function buildSavedDeviceSourceKey(device) {
         .join("|");
 }
 
+function normalizeMatchValue(value) {
+    return String(value || "")
+        .trim()
+        .toLowerCase();
+}
+
+function normalizeDeviceNameForMatch(value) {
+    return normalizeMatchValue(value).replace(/[^a-z0-9]/g, "");
+}
+
+function normalizeDevicePathForMatch(value) {
+    return normalizeMatchValue(value)
+        .replace(/^serial:/, "")
+        .replace(/^\/dev\//, "")
+        .replace(/^(tty\.|cu\.)/, "");
+}
+
+function buildVendorProductKey(device) {
+    if (!device?.vendorId || !device?.productId) {
+        return "";
+    }
+
+    return `${normalizeMatchValue(device.vendorId)}:${normalizeMatchValue(device.productId)}`;
+}
+
+function isSavedDeviceMatchedByDetection(savedDevice, detectedDevice) {
+    const savedSourceKey = normalizeMatchValue(savedDevice?.sourceKey);
+    const detectedId = normalizeMatchValue(detectedDevice?.id);
+    const savedPath = normalizeMatchValue(savedDevice?.path);
+    const detectedPath = normalizeMatchValue(detectedDevice?.path);
+    const savedAddress = normalizeMatchValue(savedDevice?.address);
+    const detectedAddress = normalizeMatchValue(detectedDevice?.address);
+    const savedSerialNumber = normalizeMatchValue(savedDevice?.serialNumber);
+    const detectedSerialNumber = normalizeMatchValue(detectedDevice?.serialNumber);
+    const savedPnpId = normalizeMatchValue(savedDevice?.pnpId);
+    const detectedPnpId = normalizeMatchValue(detectedDevice?.pnpId);
+    const savedMac = normalizeMatchValue(savedDevice?.mac);
+    const detectedMac = normalizeMatchValue(detectedDevice?.mac);
+    const savedInterface = normalizeMatchValue(savedDevice?.interface);
+    const detectedInterface = normalizeMatchValue(detectedDevice?.interface);
+    const savedProtocolAddress = normalizeMatchValue(
+        savedDevice?.protocol && savedDevice?.address ? `${savedDevice.protocol}:${savedDevice.address}` : ""
+    );
+    const detectedProtocolAddress = normalizeMatchValue(
+        detectedDevice?.protocol && detectedDevice?.address ? `${detectedDevice.protocol}:${detectedDevice.address}` : ""
+    );
+    const savedVendorProduct = buildVendorProductKey(savedDevice);
+    const detectedVendorProduct = buildVendorProductKey(detectedDevice);
+    const savedNormalizedPath = normalizeDevicePathForMatch(savedDevice?.path || savedDevice?.sourceKey);
+    const detectedNormalizedPath = normalizeDevicePathForMatch(detectedDevice?.path || detectedDevice?.id);
+    const savedNormalizedName = normalizeDeviceNameForMatch(savedDevice?.name || savedDevice?.alias);
+    const detectedNormalizedName = normalizeDeviceNameForMatch(detectedDevice?.name || detectedDevice?.manufacturer);
+    const savedManufacturer = normalizeDeviceNameForMatch(savedDevice?.manufacturer);
+    const detectedManufacturer = normalizeDeviceNameForMatch(detectedDevice?.manufacturer);
+
+    return (
+        (savedSourceKey && detectedId && savedSourceKey === detectedId) ||
+        (savedPath && detectedPath && savedPath === detectedPath) ||
+        (savedAddress && detectedAddress && savedAddress === detectedAddress) ||
+        (savedSerialNumber && detectedSerialNumber && savedSerialNumber === detectedSerialNumber) ||
+        (savedPnpId && detectedPnpId && savedPnpId === detectedPnpId) ||
+        (savedMac && detectedMac && savedMac === detectedMac) ||
+        (savedInterface && detectedInterface && savedInterface === detectedInterface) ||
+        (savedProtocolAddress && detectedProtocolAddress && savedProtocolAddress === detectedProtocolAddress) ||
+        (savedVendorProduct && detectedVendorProduct && savedVendorProduct === detectedVendorProduct) ||
+        (savedNormalizedPath && detectedNormalizedPath && savedNormalizedPath === detectedNormalizedPath) ||
+        (
+            savedVendorProduct &&
+            detectedVendorProduct &&
+            savedVendorProduct === detectedVendorProduct &&
+            (
+                (savedManufacturer && detectedManufacturer && savedManufacturer === detectedManufacturer) ||
+                (savedNormalizedName && detectedNormalizedName && savedNormalizedName === detectedNormalizedName)
+            )
+        )
+    );
+}
+
 function createSavedDeviceStatusMap(savedDevices, detectedDevices) {
-    const detectedKeys = new Set();
-
-    detectedDevices.forEach((device) => {
-        const directKeys = [
-            device.id,
-            device.path,
-            device.address,
-            device.serialNumber,
-            device.pnpId,
-            device.mac,
-            device.interface,
-            device.protocol && device.address ? `${device.protocol}:${device.address}` : "",
-            device.vendorId && device.productId ? `${device.vendorId}:${device.productId}` : "",
-        ].filter(Boolean);
-
-        directKeys.forEach((key) => detectedKeys.add(key));
-        detectedKeys.add(buildSavedDeviceSourceKey(device));
-    });
-
     return Object.fromEntries(
         (savedDevices || []).map((device) => {
-            const statusKey = buildSavedDeviceSourceKey(device);
-            const isOnline =
-                detectedKeys.has(device.sourceKey) ||
-                detectedKeys.has(device.path) ||
-                detectedKeys.has(device.address) ||
-                detectedKeys.has(device.serialNumber) ||
-                detectedKeys.has(device.pnpId) ||
-                detectedKeys.has(device.mac) ||
-                detectedKeys.has(device.interface) ||
-                detectedKeys.has(device.protocol && device.address ? `${device.protocol}:${device.address}` : "") ||
-                detectedKeys.has(device.vendorId && device.productId ? `${device.vendorId}:${device.productId}` : "") ||
-                detectedKeys.has(statusKey);
+            const isOnline = (detectedDevices || []).some((detectedDevice) =>
+                isSavedDeviceMatchedByDetection(device, detectedDevice)
+            );
 
             return [device.id, isOnline ? "online" : "offline"];
         })
     );
+}
+
+function mapConnectionStateToStatus(connectionState) {
+    if (connectionState?.state === "connected") {
+        return "online";
+    }
+
+    if (connectionState?.state === "connecting") {
+        return "loading";
+    }
+
+    return "offline";
+}
+
+function isActiveConnectionState(connectionState) {
+    return connectionState?.state === "connected" || connectionState?.state === "connecting";
 }
 
 function buildSavedDevicesStatusSignature(savedDevices) {
@@ -134,6 +203,7 @@ function NavigationBar(props) {
     const [unavailableDevice, setUnavailableDevice] = useState(null)
     const [openDeviceMenuId, setOpenDeviceMenuId] = useState(null)
     const [savedDeviceStatuses, setSavedDeviceStatuses] = useState({})
+    const [savedDeviceAvailability, setSavedDeviceAvailability] = useState({})
     const [savedDevicesStatusLoading, setSavedDevicesStatusLoading] = useState(false)
     const [devicesState, setDevicesState] = useState({
         loading: false,
@@ -223,11 +293,15 @@ function NavigationBar(props) {
     }
 
     function getSavedDeviceStatus(deviceId) {
-        if (savedDevicesStatusLoading && !savedDeviceStatuses[deviceId]) {
+        return savedDeviceStatuses[deviceId] || "offline";
+    }
+
+    function getSavedDeviceAvailabilityStatus(deviceId) {
+        if (savedDevicesStatusLoading && !savedDeviceAvailability[deviceId]) {
             return "loading";
         }
 
-        return savedDeviceStatuses[deviceId] || "offline";
+        return savedDeviceAvailability[deviceId] || "offline";
     }
 
     function getSavedDeviceStatusClasses(status) {
@@ -242,16 +316,19 @@ function NavigationBar(props) {
         return "bg-red-500";
     }
 
-    function handleSavedDeviceClick(event, device) {
+    function handleSavedDeviceNavigate(device) {
         const deviceStatus = getSavedDeviceStatus(device.id);
 
         if (deviceStatus === "offline" || deviceStatus === "loading") {
-            event.preventDefault();
             setUnavailableDevice({
                 ...device,
                 status: deviceStatus,
             });
+            return false;
         }
+
+        void router.push(`/app/device/${device.id}`);
+        return true;
     }
 
     async function handleRecentSavedDeviceSelect(device) {
@@ -315,10 +392,69 @@ function NavigationBar(props) {
                 ...(result?.groups?.network || []),
                 ...(result?.connected || []),
             ];
-            const nextStatuses = createSavedDeviceStatusMap(nextSavedDevices, detectedDevices);
+            const detectedStatuses = createSavedDeviceStatusMap(nextSavedDevices, detectedDevices);
+            const connectionStates = await Promise.all(
+                (nextSavedDevices || []).map(async (device) => {
+                    try {
+                        const connectionState = await window.electron?.getDeviceConnectionState?.(device.id);
+                        return [device.id, connectionState];
+                    } catch (error) {
+                        return [device.id, null];
+                    }
+                })
+            );
+            const connectionStateMap = Object.fromEntries(connectionStates);
+            const nextAvailability = Object.fromEntries(
+                (nextSavedDevices || []).map((device) => {
+                    const currentStatus = detectedStatuses[device.id] || "offline";
+                    const currentConnectionState = connectionStateMap[device.id];
 
+                    if (currentStatus === "online" || isActiveConnectionState(currentConnectionState)) {
+                        savedDeviceStatusMisses[device.id] = 0;
+                        return [device.id, "online"];
+                    }
+
+                    const nextMisses = (savedDeviceStatusMisses[device.id] || 0) + 1;
+                    savedDeviceStatusMisses[device.id] = nextMisses;
+
+                    if (nextMisses < DEVICE_STATUS_MISS_THRESHOLD) {
+                        return [device.id, savedDeviceAvailabilityCache[device.id] || "online"];
+                    }
+
+                    return [device.id, "offline"];
+                })
+            );
+            const nextStatuses = Object.fromEntries(
+                (nextSavedDevices || []).map((device) => {
+                    const currentConnectionState = connectionStateMap[device.id];
+                    const currentDetectedStatus = detectedStatuses[device.id] || "offline";
+                    const previousStatus = savedDeviceStatusCache[device.id] || "offline";
+
+                    if (currentConnectionState?.state === "connecting") {
+                        return [device.id, "loading"];
+                    }
+
+                    if (currentDetectedStatus === "online" && previousStatus === "offline") {
+                        return [device.id, "loading"];
+                    }
+
+                    if (currentConnectionState?.state === "connected" || currentDetectedStatus === "online") {
+                        return [device.id, "online"];
+                    }
+
+                    return [device.id, "offline"];
+                })
+            );
+
+            const activeDeviceIds = new Set((nextSavedDevices || []).map((device) => device.id));
+            savedDeviceStatusMisses = Object.fromEntries(
+                Object.entries(savedDeviceStatusMisses).filter(([deviceId]) => activeDeviceIds.has(deviceId))
+            );
+
+            savedDeviceAvailabilityCache = nextAvailability;
             savedDeviceStatusCache = nextStatuses;
             savedDeviceStatusLastCheckedAt = Date.now();
+            setSavedDeviceAvailability(nextAvailability);
             setSavedDeviceStatuses(nextStatuses);
             return nextStatuses;
         })()
@@ -327,8 +463,10 @@ function NavigationBar(props) {
                     (nextSavedDevices || []).map((device) => [device.id, "offline"])
                 );
 
+                savedDeviceAvailabilityCache = fallbackStatuses;
                 savedDeviceStatusCache = fallbackStatuses;
                 savedDeviceStatusLastCheckedAt = Date.now();
+                setSavedDeviceAvailability(fallbackStatuses);
                 setSavedDeviceStatuses(fallbackStatuses);
                 return fallbackStatuses;
             })
@@ -545,20 +683,23 @@ function NavigationBar(props) {
 
     useEffect(() => {
         if (!savedDevicesStatusSignature) {
+            savedDeviceAvailabilityCache = {};
             savedDeviceStatusCache = {};
             savedDeviceStatusLastCheckedAt = 0;
+            savedDeviceStatusMisses = {};
+            setSavedDeviceAvailability({});
             setSavedDeviceStatuses({});
             setSavedDevicesStatusLoading(false);
             return;
         }
 
         if (Object.keys(savedDeviceStatusCache).length) {
+            setSavedDeviceAvailability(savedDeviceAvailabilityCache);
             setSavedDeviceStatuses(savedDeviceStatusCache);
             setSavedDevicesStatusLoading(false);
         }
 
         let intervalId;
-        let timeoutId;
         let isDisposed = false;
 
         async function syncStatuses() {
@@ -569,19 +710,11 @@ function NavigationBar(props) {
             await refreshSavedDeviceStatuses(statusTrackedSavedDevicesRef.current);
         }
 
-        const elapsed = savedDeviceStatusLastCheckedAt
-            ? Date.now() - savedDeviceStatusLastCheckedAt
-            : DEVICE_STATUS_REFRESH_INTERVAL_MS;
-        const delay = Math.max(DEVICE_STATUS_REFRESH_INTERVAL_MS - elapsed, 0);
-
-        timeoutId = window.setTimeout(() => {
-            syncStatuses();
-            intervalId = window.setInterval(syncStatuses, DEVICE_STATUS_REFRESH_INTERVAL_MS);
-        }, delay);
+        syncStatuses();
+        intervalId = window.setInterval(syncStatuses, DEVICE_STATUS_REFRESH_INTERVAL_MS);
 
         return () => {
             isDisposed = true;
-            window.clearTimeout(timeoutId);
             window.clearInterval(intervalId);
         };
     }, [refreshSavedDeviceStatuses, savedDevicesStatusSignature]);
@@ -768,22 +901,6 @@ function NavigationBar(props) {
                                                         ))}
                                                     </CommandGroup>
                                                 ) : null}
-                                                {devicesState.groups.bluetooth.length ? (
-                                                    <CommandGroup heading="Bluetooth">
-                                                        {devicesState.groups.bluetooth.map((device) => (
-                                                            <CommandItem
-                                                                key={device.id}
-                                                                onSelect={() => handleDetectedDeviceSelect(device)}
-                                                                className="cursor-pointer items-center w-full !font-semibold !text-xs min-h-7 rounded-lg flex flex-row gap-2 !py-0"
-                                                            >
-                                                                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round" className="!h-[14px] lucide lucide-hard-drive-icon lucide-hard-drive"><path d="M10 16h.01"/><path d="M2.212 11.577a2 2 0 0 0-.212.896V18a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-5.527a2 2 0 0 0-.212-.896L18.55 5.11A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><path d="M21.946 12.013H2.054"/><path d="M6 16h.01"/></svg>
-                                                                <div className="flex flex-col">
-                                                                    <span className="!font-semibold !text-xs">{device.name}</span>
-                                                                </div>
-                                                            </CommandItem>
-                                                        ))}
-                                                    </CommandGroup>
-                                                ) : null}
                                                 {devicesState.groups.network.length ? (
                                                     <CommandGroup heading="Network">
                                                         {devicesState.groups.network.map((device) => (
@@ -906,20 +1023,39 @@ function NavigationBar(props) {
                                     {ui.savedDevices.map((device) => (
                                         <li key={device.id} className="group truncate">
                                             <div className={`relative rounded-lg ${router.asPath === `/app/device/${device.id}` || openDeviceMenuId === device.id ? `bg-neutral-100 dark:bg-neutral-800` : `hover:bg-neutral-100 dark:hover:bg-neutral-800`}`}>
-                                                <Link
-                                                    href={`/app/device/${device.id}`}
-                                                    className="flex min-w-0 items-center gap-3 truncate rounded-lg p-1.5 pr-10 text-xs font-semibold"
-                                                    onClick={(event) => handleSavedDeviceClick(event, device)}
+                                                <button
+                                                    type="button"
+                                                    className="flex w-full min-w-0 items-center gap-3 truncate rounded-lg p-1.5 pr-10 text-left text-xs font-semibold"
+                                                    onClick={() => handleSavedDeviceNavigate(device)}
+                                                    aria-current={router.asPath === `/app/device/${device.id}` ? "page" : undefined}
                                                 >
                                                     <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round" className="!max-h-[16px] !min-h-[16px] !h-[16px] shrink-0 lucide lucide-hard-drive-icon lucide-hard-drive"><path d="M10 16h.01"/><path d="M2.212 11.577a2 2 0 0 0-.212.896V18a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-5.527a2 2 0 0 0-.212-.896L18.55 5.11A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><path d="M21.946 12.013H2.054"/><path d="M6 16h.01"/></svg>
-                                                    <span
-                                                        className={`h-2 w-2 shrink-0 rounded-full ${getSavedDeviceStatusClasses(getSavedDeviceStatus(device.id))}`}
-                                                        aria-hidden="true"
-                                                    />
+                                                    {getSavedDeviceStatus(device.id) === "loading" ? (
+                                                        <svg
+                                                            xmlns="http://www.w3.org/2000/svg"
+                                                            width="14"
+                                                            height="14"
+                                                            viewBox="0 0 24 24"
+                                                            fill="none"
+                                                            stroke="currentColor"
+                                                            strokeWidth="2"
+                                                            strokeLinecap="round"
+                                                            strokeLinejoin="round"
+                                                            className="h-3.5 w-3.5 shrink-0 animate-spin text-neutral-500"
+                                                            aria-hidden="true"
+                                                        >
+                                                            <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+                                                        </svg>
+                                                    ) : (
+                                                        <span
+                                                            className={`h-2 w-2 shrink-0 rounded-full ${getSavedDeviceStatusClasses(getSavedDeviceStatus(device.id))}`}
+                                                            aria-hidden="true"
+                                                        />
+                                                    )}
                                                     <div className="flex min-w-0 flex-col truncate">
                                                         <span className="truncate">{device.alias || device.name}</span>
                                                     </div>
-                                                </Link>
+                                                </button>
                                                 <DropdownMenu
                                                     open={openDeviceMenuId === device.id}
                                                     onOpenChange={(isOpen) => {

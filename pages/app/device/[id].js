@@ -22,6 +22,10 @@ function isAuthErrorMessage(message) {
     return String(message || "").toLowerCase().includes("authentication methods failed");
 }
 
+function isActiveConnectionState(connectionState) {
+    return connectionState?.state === "connected" || connectionState?.state === "connecting";
+}
+
 function normalizeDeviceText(value) {
     return String(value || "")
         .toLowerCase()
@@ -192,6 +196,8 @@ function DevicePage({
     const terminalContainerRef = useRef(null);
     const hasLoadedTerminalHeight = useRef(false);
     const isDeviceCurrentlyAvailableRef = useRef(true);
+    const deviceAvailabilityMissesRef = useRef(0);
+    const deviceConnectionStateRef = useRef(null);
     const deviceRef = useRef(null);
     const isTerminalOpenRef = useRef(false);
     const [groupHeight, setGroupHeight] = useState(0);
@@ -203,6 +209,12 @@ function DevicePage({
     useEffect(() => {
         isTerminalOpenRef.current = isTerminalOpen;
     }, [isTerminalOpen]);
+
+    useEffect(() => {
+        deviceAvailabilityMissesRef.current = 0;
+        isDeviceCurrentlyAvailableRef.current = true;
+        setUnavailableDevice(null);
+    }, [device?.id]);
 
     const deviceAvailabilitySignature = useMemo(() => {
         if (!device?.id) {
@@ -457,8 +469,36 @@ function DevicePage({
     }, [deviceTerminalOpenById, id, router.isReady]);
 
     useEffect(() => {
+        if (!device?.id || !window?.electron?.onDeviceConnectionStatus) {
+            deviceConnectionStateRef.current = null;
+            return;
+        }
+
+        deviceConnectionStateRef.current = null;
+
+        const unsubscribe = window.electron.onDeviceConnectionStatus((payload) => {
+            if (payload?.deviceId !== device.id) {
+                return;
+            }
+
+            deviceConnectionStateRef.current = payload;
+        });
+
+        window.electron?.getDeviceConnectionState?.(device.id)
+            .then((payload) => {
+                deviceConnectionStateRef.current = payload;
+            })
+            .catch(() => {});
+
+        return () => {
+            unsubscribe?.();
+        };
+    }, [device?.id]);
+
+    useEffect(() => {
         if (!device?.id || !window?.electron?.listDevices) {
             isDeviceCurrentlyAvailableRef.current = true;
+            deviceAvailabilityMissesRef.current = 0;
             return;
         }
 
@@ -481,7 +521,6 @@ function DevicePage({
                 const detectedDevices = getDetectedDevicesList(detectedResult);
                 const resolvedDevice = getResolvedDetectedDevice(currentDevice, detectedDevices);
                 let isAvailable = isSavedDeviceAvailable(currentDevice, detectedDevices) || Boolean(resolvedDevice);
-                const wasAvailable = isDeviceCurrentlyAvailableRef.current;
 
                 if (isAvailable && resolvedDevice) {
                     setDevice((currentDevice) => {
@@ -513,7 +552,7 @@ function DevicePage({
                     });
                 }
 
-                if (!isAvailable && wasAvailable) {
+                if (!isAvailable) {
                     await new Promise((resolve) => {
                         window.setTimeout(resolve, 1000);
                     });
@@ -566,6 +605,25 @@ function DevicePage({
                         }
 
                         isDeviceCurrentlyAvailableRef.current = true;
+                        deviceAvailabilityMissesRef.current = 0;
+                        return;
+                    }
+
+                    const currentConnectionState =
+                        deviceConnectionStateRef.current?.deviceId === deviceId
+                            ? deviceConnectionStateRef.current
+                            : await window.electron?.getDeviceConnectionState?.(deviceId).catch(() => null);
+
+                    if (isActiveConnectionState(currentConnectionState)) {
+                        isDeviceCurrentlyAvailableRef.current = true;
+                        deviceAvailabilityMissesRef.current = 0;
+                        return;
+                    }
+
+                    deviceAvailabilityMissesRef.current += 1;
+
+                    if (deviceAvailabilityMissesRef.current < 3) {
+                        isDeviceCurrentlyAvailableRef.current = true;
                         return;
                     }
 
@@ -580,8 +638,12 @@ function DevicePage({
                         ...currentDevice,
                         status: "offline",
                     });
+
+                    isDeviceCurrentlyAvailableRef.current = false;
+                    return;
                 }
 
+                deviceAvailabilityMissesRef.current = 0;
                 isDeviceCurrentlyAvailableRef.current = isAvailable;
             } catch (error) {
                 return;
