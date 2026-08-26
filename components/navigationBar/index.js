@@ -35,6 +35,7 @@ import {Input} from "@/components/ui/input";
 
 const DEVICE_STATUS_REFRESH_INTERVAL_MS = 3000;
 const DEVICE_STATUS_MISS_THRESHOLD = 3;
+const PENDING_UNAVAILABLE_DEVICE_KEY = "pending_unavailable_device";
 let savedDeviceStatusCache = {};
 let savedDeviceAvailabilityCache = {};
 let savedDeviceStatusLastCheckedAt = 0;
@@ -69,6 +70,19 @@ function normalizeMatchValue(value) {
 
 function normalizeDeviceNameForMatch(value) {
     return normalizeMatchValue(value).replace(/[^a-z0-9]/g, "");
+}
+
+function isArduinoLikeDevice(device) {
+    const searchable = [
+        device?.alias,
+        device?.name,
+        device?.manufacturer,
+        device?.path,
+    ]
+        .map(normalizeDeviceNameForMatch)
+        .join(" ");
+
+    return searchable.includes("arduino");
 }
 
 function normalizeDevicePathForMatch(value) {
@@ -139,12 +153,44 @@ function isSavedDeviceMatchedByDetection(savedDevice, detectedDevice) {
     );
 }
 
+function findPreferredDetectedSibling(savedDevice, detectedDevices) {
+    if (!savedDevice || !isArduinoLikeDevice(savedDevice)) {
+        return null;
+    }
+
+    const candidates = (detectedDevices || []).filter((detectedDevice) => {
+        if (!isArduinoLikeDevice(detectedDevice)) {
+            return false;
+        }
+
+        if (savedDevice?.address && detectedDevice?.path) {
+            return true;
+        }
+
+        if (savedDevice?.path && detectedDevice?.address) {
+            return true;
+        }
+
+        return false;
+    });
+
+    if (candidates.length === 1) {
+        return candidates[0];
+    }
+
+    return null;
+}
+
 function createSavedDeviceStatusMap(savedDevices, detectedDevices) {
     return Object.fromEntries(
         (savedDevices || []).map((device) => {
-            const isOnline = (detectedDevices || []).some((detectedDevice) =>
+            const detectedMatch = (detectedDevices || []).find((detectedDevice) =>
                 isSavedDeviceMatchedByDetection(device, detectedDevice)
             );
+            const preferredSibling = detectedMatch
+                ? null
+                : findPreferredDetectedSibling(device, detectedDevices);
+            const isOnline = Boolean(detectedMatch || preferredSibling);
 
             return [device.id, isOnline ? "online" : "offline"];
         })
@@ -229,6 +275,30 @@ function NavigationBar(props) {
         progress: null,
     });
 
+    useEffect(() => {
+        if (typeof window === "undefined") {
+            return;
+        }
+
+        const rawPendingUnavailableDevice = window.localStorage.getItem(PENDING_UNAVAILABLE_DEVICE_KEY);
+
+        if (!rawPendingUnavailableDevice) {
+            return;
+        }
+
+        try {
+            const pendingUnavailableDevice = JSON.parse(rawPendingUnavailableDevice);
+
+            if (pendingUnavailableDevice) {
+                setUnavailableDevice(pendingUnavailableDevice);
+            }
+        } catch (error) {
+            return;
+        } finally {
+            window.localStorage.removeItem(PENDING_UNAVAILABLE_DEVICE_KEY);
+        }
+    }, [router.asPath]);
+
     const linkActive = (path) => {
         if (!path) {
             return false;
@@ -284,6 +354,25 @@ function NavigationBar(props) {
         setPaletteMode("devices");
         setOpen(true);
     }
+
+    useEffect(() => {
+        function handleSearchShortcut(event) {
+            const isShortcut = (event.metaKey || event.ctrlKey) && event.key?.toLowerCase() === "k";
+
+            if (!isShortcut) {
+                return;
+            }
+
+            event.preventDefault();
+            openSearchPalette();
+        }
+
+        window.addEventListener("keydown", handleSearchShortcut);
+
+        return () => {
+            window.removeEventListener("keydown", handleSearchShortcut);
+        };
+    }, []);
 
     function handleDetectedDeviceSelect(device) {
         setSelectedDevice(device);
@@ -1015,7 +1104,7 @@ function NavigationBar(props) {
                                     onClick={openDevicesPalette}
                                     className="text-neutral-400 hover:text-black p-1.5 hover:bg-neutral-100 dark:hover:bg-neutral-800 dark:hover:text-white rounded-md cursor-pointer"
                                 >
-                                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" class="!h-[14px] !w-[14px] lucide lucide-folder-plus-icon lucide-folder-plus"><path d="M12 10v6"/><path d="M9 13h6"/><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" class="!h-[14px] !w-[14px] lucide lucide-plus-icon lucide-plus"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
                                 </div>
                             </div>
                             {ui?.savedDevices?.length ? (

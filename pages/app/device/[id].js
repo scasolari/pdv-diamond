@@ -8,12 +8,7 @@ import {
     DialogHeader,
     DialogTitle,
 } from "@/components/ui/dialog";
-import {
-    ResizableHandle,
-    ResizablePanel,
-    ResizablePanelGroup,
-} from "@/components/ui/resizable";
-import { setDeviceTerminalOpen, setTerminalHeight } from "@/redux/actions/main";
+import { setDeviceTerminalOpen } from "@/redux/actions/main";
 import { connect } from "react-redux";
 import { useRouter } from "next/router";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -91,10 +86,12 @@ function findDetectedDeviceMatch(savedDevice, detectedDevices) {
 
     const savedKeys = new Set(buildDeviceMatchKeys(savedDevice));
 
-    return detectedDevices.find((detectedDevice) => {
-        const detectedKeys = buildDeviceMatchKeys(detectedDevice);
-        return detectedKeys.some((key) => savedKeys.has(key));
-    }) || null;
+    return (
+        detectedDevices.find((detectedDevice) => {
+            const detectedKeys = buildDeviceMatchKeys(detectedDevice);
+            return detectedKeys.some((key) => savedKeys.has(key));
+        }) || null
+    );
 }
 
 function findPreferredNetworkSibling(savedDevice, detectedDevices) {
@@ -170,248 +167,93 @@ function isSavedDeviceAvailable(savedDevice, detectedDevices) {
 function getDetectedDevicesList(detectedResult) {
     return [
         ...(detectedResult?.groups?.usb || []),
-        ...(detectedResult?.groups?.bluetooth || []),
         ...(detectedResult?.groups?.network || []),
         ...(detectedResult?.connected || []),
     ];
 }
 
-function DevicePage({
-    terminalHeight,
-    deviceTerminalOpenById,
-    setTerminalHeight,
-    setDeviceTerminalOpen,
-}) {
+function LoadingTitle() {
+    return (
+        <div>
+            <svg
+                xmlns="http://www.w3.org/2000/svg"
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                className="h-[14px] w-[14px] animate-spin text-neutral-500"
+            >
+                <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+            </svg>
+        </div>
+    );
+}
+
+function DevicePage({ setDeviceTerminalOpen }) {
     const router = useRouter();
     const { id } = router.query;
     const [device, setDevice] = useState(null);
     const [isLoading, setIsLoading] = useState(true);
     const [loadError, setLoadError] = useState("");
-    const [isTerminalOpen, setIsTerminalOpen] = useState(false);
     const [terminalError, setTerminalError] = useState("");
     const [availabilityMessage, setAvailabilityMessage] = useState("");
     const [unavailableDevice, setUnavailableDevice] = useState(null);
-    const pageContainerRef = useRef(null);
-    const panelGroupRef = useRef(null);
     const terminalContainerRef = useRef(null);
-    const hasLoadedTerminalHeight = useRef(false);
-    const isDeviceCurrentlyAvailableRef = useRef(true);
-    const deviceAvailabilityMissesRef = useRef(0);
-    const deviceConnectionStateRef = useRef(null);
     const deviceRef = useRef(null);
-    const isTerminalOpenRef = useRef(false);
-    const [groupHeight, setGroupHeight] = useState(0);
+    const deviceConnectionStateRef = useRef(null);
+    const deviceAvailabilityMissesRef = useRef(0);
+    const hasRedirectedUnavailableRef = useRef(false);
 
     useEffect(() => {
         deviceRef.current = device;
     }, [device]);
 
     useEffect(() => {
-        isTerminalOpenRef.current = isTerminalOpen;
-    }, [isTerminalOpen]);
-
-    useEffect(() => {
         deviceAvailabilityMissesRef.current = 0;
-        isDeviceCurrentlyAvailableRef.current = true;
+        hasRedirectedUnavailableRef.current = false;
         setUnavailableDevice(null);
     }, [device?.id]);
 
-    const deviceAvailabilitySignature = useMemo(() => {
-        if (!device?.id) {
-            return "";
+    const terminalMode = useMemo(() => {
+        if (device?.address) {
+            return "ssh";
         }
 
-        return [
-            device.id,
-            device.sourceKey,
-            device.path,
-            device.address,
-            device.serialNumber,
-            device.pnpId,
-            device.mac,
-            device.interface,
-            device.protocol,
-            device.vendorId,
-            device.productId,
-        ].join("|");
-    }, [
-        device?.address,
-        device?.id,
-        device?.path,
-        device?.pnpId,
-        device?.mac,
-        device?.interface,
-        device?.protocol,
-        device?.productId,
-        device?.serialNumber,
-        device?.sourceKey,
-        device?.vendorId,
-    ]);
-
-    const terminalConnectionSignature = useMemo(() => {
-        if (!device?.id) {
-            return "";
+        if (device?.path) {
+            return "serial";
         }
 
-        return [
-            device.id,
-            device.address,
-            device.port,
-            device.path,
-            device.baudRate,
-            device.transport,
-            device.protocol,
-        ].join("|");
-    }, [
-        device?.address,
-        device?.baudRate,
-        device?.id,
-        device?.path,
-        device?.port,
-        device?.protocol,
-        device?.transport,
-    ]);
+        return null;
+    }, [device?.address, device?.path]);
 
-    useEffect(() => {
-        const updateHeight = () => {
-            setGroupHeight(pageContainerRef.current?.clientHeight ?? 0);
-        };
-
-        updateHeight();
-        window.addEventListener("resize", updateHeight);
-
-        return () => {
-            window.removeEventListener("resize", updateHeight);
-        };
-    }, []);
-
-    const minTerminalSize = useMemo(() => {
-        if (!groupHeight) {
-            return 20;
+    const terminalAvailabilityMessage = useMemo(() => {
+        if (terminalMode === "ssh") {
+            return "SSH connection is not available for this device.";
         }
 
-        return Math.min((180 / groupHeight) * 100, 60);
-    }, [groupHeight]);
-
-    const maxTerminalSize = useMemo(() => {
-        if (!groupHeight) {
-            return 60;
+        if (terminalMode === "serial") {
+            return "Serial console is not available for this device.";
         }
 
-        return Math.min((600 / groupHeight) * 100, 80);
-    }, [groupHeight]);
-
-    useEffect(() => {
-        let cancelled = false;
-
-        async function loadTerminalHeight() {
-            try {
-                const response = await fetch("/api/app-settings/deviceTerminalHeight");
-                const result = await response.json();
-                const savedHeight = Number(result?.value);
-
-                if (!cancelled && Number.isFinite(savedHeight)) {
-                    setTerminalHeight(savedHeight);
-                }
-            } catch (error) {
-                return;
-            } finally {
-                if (!cancelled) {
-                    hasLoadedTerminalHeight.current = true;
-                }
-            }
-        }
-
-        loadTerminalHeight();
-
-        return () => {
-            cancelled = true;
-        };
-    }, [setTerminalHeight]);
-
-    useEffect(() => {
-        if (!hasLoadedTerminalHeight.current) {
-            return;
-        }
-
-        fetch("/api/app-settings/deviceTerminalHeight", {
-            method: "PUT",
-            headers: {
-                "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-                value: terminalHeight,
-            }),
-        }).catch(() => {});
-    }, [terminalHeight]);
-
-    useEffect(() => {
-        if (!isTerminalOpen || !groupHeight || !panelGroupRef.current) {
-            return;
-        }
-
-        const clampedHeight = Math.min(Math.max(terminalHeight || 320, 180), 600);
-        const terminalSize = Math.min(
-            Math.max((clampedHeight / groupHeight) * 100, minTerminalSize),
-            maxTerminalSize
-        );
-
-        panelGroupRef.current.setLayout([100 - terminalSize, terminalSize]);
-    }, [groupHeight, isTerminalOpen, maxTerminalSize, minTerminalSize, terminalHeight]);
-
-    const handleTerminalLayout = (layout) => {
-        if (!groupHeight || !layout?.length || !isTerminalOpen) {
-            return;
-        }
-
-        const nextHeight = Math.round((groupHeight * layout[1]) / 100);
-        const clampedHeight = Math.min(Math.max(nextHeight, 180), 600);
-
-        if (clampedHeight !== terminalHeight) {
-            setTerminalHeight(clampedHeight);
-        }
-    };
-
-    function handleOpenTerminal() {
-        if (!device?.address) {
-            setIsTerminalOpen(false);
-            if (device?.id) {
-                setDeviceTerminalOpen(device.id, false);
-            }
-            setAvailabilityMessage("SSH connection is not available for this device.");
-            return;
-        }
-
-        setAvailabilityMessage("");
-        setIsTerminalOpen(true);
-        if (device?.id) {
-            setDeviceTerminalOpen(device.id, true);
-        }
-    }
-
-    async function handleCloseTerminal() {
-        if (device?.id) {
-            setDeviceTerminalOpen(device.id, false);
-            window.electron?.closeDeviceTerminal?.(device.id).catch(() => {});
-        }
-
-        setIsTerminalOpen(false);
-        setTerminalError("");
-    }
+        return "No supported terminal is available for this device.";
+    }, [terminalMode]);
 
     useEffect(() => {
         if (!router.isReady || !id) {
             return;
         }
 
-        setTerminalError("");
-        setAvailabilityMessage("");
-
         let cancelled = false;
 
         async function loadDevice() {
             setIsLoading(true);
             setLoadError("");
+            setTerminalError("");
+            setAvailabilityMessage("");
 
             try {
                 const response = await fetch(`/api/devices/${id}`);
@@ -448,7 +290,6 @@ function DevicePage({
                 }
 
                 setDevice(nextDevice);
-                setIsTerminalOpen(Boolean(deviceTerminalOpenById[id]));
             } catch (error) {
                 if (!cancelled) {
                     setLoadError(error?.message || "Unable to load device.");
@@ -466,7 +307,7 @@ function DevicePage({
         return () => {
             cancelled = true;
         };
-    }, [deviceTerminalOpenById, id, router.isReady]);
+    }, [id, router.isReady]);
 
     useEffect(() => {
         if (!device?.id || !window?.electron?.onDeviceConnectionStatus) {
@@ -484,7 +325,8 @@ function DevicePage({
             deviceConnectionStateRef.current = payload;
         });
 
-        window.electron?.getDeviceConnectionState?.(device.id)
+        window.electron
+            ?.getDeviceConnectionState?.(device.id)
             .then((payload) => {
                 deviceConnectionStateRef.current = payload;
             })
@@ -497,8 +339,6 @@ function DevicePage({
 
     useEffect(() => {
         if (!device?.id || !window?.electron?.listDevices) {
-            isDeviceCurrentlyAvailableRef.current = true;
-            deviceAvailabilityMissesRef.current = 0;
             return;
         }
 
@@ -523,27 +363,27 @@ function DevicePage({
                 let isAvailable = isSavedDeviceAvailable(currentDevice, detectedDevices) || Boolean(resolvedDevice);
 
                 if (isAvailable && resolvedDevice) {
-                    setDevice((currentDevice) => {
-                        if (!currentDevice || currentDevice.id !== deviceId) {
-                            return currentDevice;
+                    setDevice((latestDevice) => {
+                        if (!latestDevice || latestDevice.id !== deviceId) {
+                            return latestDevice;
                         }
 
-                        const nextAddress = resolvedDevice.address ?? currentDevice.address ?? null;
-                        const nextPort = resolvedDevice.port ?? currentDevice.port ?? null;
-                        const nextProtocol = resolvedDevice.protocol ?? currentDevice.protocol ?? null;
-                        const nextPath = resolvedDevice.path ?? currentDevice.path ?? null;
+                        const nextAddress = resolvedDevice.address ?? latestDevice.address ?? null;
+                        const nextPort = resolvedDevice.port ?? latestDevice.port ?? null;
+                        const nextProtocol = resolvedDevice.protocol ?? latestDevice.protocol ?? null;
+                        const nextPath = resolvedDevice.path ?? latestDevice.path ?? null;
 
                         if (
-                            nextAddress === (currentDevice.address ?? null) &&
-                            nextPort === (currentDevice.port ?? null) &&
-                            nextProtocol === (currentDevice.protocol ?? null) &&
-                            nextPath === (currentDevice.path ?? null)
+                            nextAddress === (latestDevice.address ?? null) &&
+                            nextPort === (latestDevice.port ?? null) &&
+                            nextProtocol === (latestDevice.protocol ?? null) &&
+                            nextPath === (latestDevice.path ?? null)
                         ) {
-                            return currentDevice;
+                            return latestDevice;
                         }
 
                         return {
-                            ...currentDevice,
+                            ...latestDevice,
                             address: nextAddress,
                             port: nextPort,
                             protocol: nextProtocol,
@@ -552,99 +392,102 @@ function DevicePage({
                     });
                 }
 
-                if (!isAvailable) {
-                    await new Promise((resolve) => {
-                        window.setTimeout(resolve, 1000);
-                    });
-
-                    if (cancelled) {
-                        return;
-                    }
-
-                    const retryResult = await window.electron.listDevices();
-
-                    if (cancelled) {
-                        return;
-                    }
-
-                    const retryDetectedDevices = getDetectedDevicesList(retryResult);
-                    const retryResolvedDevice = getResolvedDetectedDevice(currentDevice, retryDetectedDevices);
-                    isAvailable =
-                        isSavedDeviceAvailable(currentDevice, retryDetectedDevices) ||
-                        Boolean(retryResolvedDevice);
-
-                    if (isAvailable) {
-                        if (retryResolvedDevice) {
-                            setDevice((latestDevice) => {
-                                if (!latestDevice || latestDevice.id !== deviceId) {
-                                    return latestDevice;
-                                }
-
-                                const nextAddress = retryResolvedDevice.address ?? latestDevice.address ?? null;
-                                const nextPort = retryResolvedDevice.port ?? latestDevice.port ?? null;
-                                const nextProtocol = retryResolvedDevice.protocol ?? latestDevice.protocol ?? null;
-                                const nextPath = retryResolvedDevice.path ?? latestDevice.path ?? null;
-
-                                if (
-                                    nextAddress === (latestDevice.address ?? null) &&
-                                    nextPort === (latestDevice.port ?? null) &&
-                                    nextProtocol === (latestDevice.protocol ?? null) &&
-                                    nextPath === (latestDevice.path ?? null)
-                                ) {
-                                    return latestDevice;
-                                }
-
-                                return {
-                                    ...latestDevice,
-                                    address: nextAddress,
-                                    port: nextPort,
-                                    protocol: nextProtocol,
-                                    path: nextPath,
-                                };
-                            });
-                        }
-
-                        isDeviceCurrentlyAvailableRef.current = true;
-                        deviceAvailabilityMissesRef.current = 0;
-                        return;
-                    }
-
-                    const currentConnectionState =
-                        deviceConnectionStateRef.current?.deviceId === deviceId
-                            ? deviceConnectionStateRef.current
-                            : await window.electron?.getDeviceConnectionState?.(deviceId).catch(() => null);
-
-                    if (isActiveConnectionState(currentConnectionState)) {
-                        isDeviceCurrentlyAvailableRef.current = true;
-                        deviceAvailabilityMissesRef.current = 0;
-                        return;
-                    }
-
-                    deviceAvailabilityMissesRef.current += 1;
-
-                    if (deviceAvailabilityMissesRef.current < 3) {
-                        isDeviceCurrentlyAvailableRef.current = true;
-                        return;
-                    }
-
-                    if (isTerminalOpenRef.current) {
-                        setDeviceTerminalOpen(deviceId, false);
-                        window.electron?.closeDeviceTerminal?.(deviceId).catch(() => {});
-                        setIsTerminalOpen(false);
-                        setTerminalError("");
-                    }
-
-                    setUnavailableDevice({
-                        ...currentDevice,
-                        status: "offline",
-                    });
-
-                    isDeviceCurrentlyAvailableRef.current = false;
+                if (isAvailable) {
+                    deviceAvailabilityMissesRef.current = 0;
                     return;
                 }
 
-                deviceAvailabilityMissesRef.current = 0;
-                isDeviceCurrentlyAvailableRef.current = isAvailable;
+                await new Promise((resolve) => {
+                    window.setTimeout(resolve, 1000);
+                });
+
+                if (cancelled) {
+                    return;
+                }
+
+                const retryResult = await window.electron.listDevices();
+
+                if (cancelled) {
+                    return;
+                }
+
+                const retryDetectedDevices = getDetectedDevicesList(retryResult);
+                const retryResolvedDevice = getResolvedDetectedDevice(currentDevice, retryDetectedDevices);
+                isAvailable =
+                    isSavedDeviceAvailable(currentDevice, retryDetectedDevices) ||
+                    Boolean(retryResolvedDevice);
+
+                if (isAvailable) {
+                    if (retryResolvedDevice) {
+                        setDevice((latestDevice) => {
+                            if (!latestDevice || latestDevice.id !== deviceId) {
+                                return latestDevice;
+                            }
+
+                            const nextAddress = retryResolvedDevice.address ?? latestDevice.address ?? null;
+                            const nextPort = retryResolvedDevice.port ?? latestDevice.port ?? null;
+                            const nextProtocol = retryResolvedDevice.protocol ?? latestDevice.protocol ?? null;
+                            const nextPath = retryResolvedDevice.path ?? latestDevice.path ?? null;
+
+                            if (
+                                nextAddress === (latestDevice.address ?? null) &&
+                                nextPort === (latestDevice.port ?? null) &&
+                                nextProtocol === (latestDevice.protocol ?? null) &&
+                                nextPath === (latestDevice.path ?? null)
+                            ) {
+                                return latestDevice;
+                            }
+
+                            return {
+                                ...latestDevice,
+                                address: nextAddress,
+                                port: nextPort,
+                                protocol: nextProtocol,
+                                path: nextPath,
+                            };
+                        });
+                    }
+
+                    deviceAvailabilityMissesRef.current = 0;
+                    return;
+                }
+
+                const currentConnectionState =
+                    deviceConnectionStateRef.current?.deviceId === deviceId
+                        ? deviceConnectionStateRef.current
+                        : await window.electron?.getDeviceConnectionState?.(deviceId).catch(() => null);
+
+                if (isActiveConnectionState(currentConnectionState)) {
+                    deviceAvailabilityMissesRef.current = 0;
+                    return;
+                }
+
+                deviceAvailabilityMissesRef.current += 1;
+
+                if (deviceAvailabilityMissesRef.current < 3 || hasRedirectedUnavailableRef.current) {
+                    return;
+                }
+
+                hasRedirectedUnavailableRef.current = true;
+
+                window.electron?.closeDeviceTerminal?.(deviceId).catch(() => {});
+                setDeviceTerminalOpen(deviceId, false);
+
+                const offlineDevice = {
+                    ...currentDevice,
+                    status: "offline",
+                };
+
+                setUnavailableDevice(offlineDevice);
+
+                if (typeof window !== "undefined") {
+                    window.localStorage.setItem(
+                        "pending_unavailable_device",
+                        JSON.stringify(offlineDevice)
+                    );
+                }
+
+                await router.push("/app/dashboard");
             } catch (error) {
                 return;
             }
@@ -657,10 +500,10 @@ function DevicePage({
             cancelled = true;
             window.clearInterval(intervalId);
         };
-    }, [device?.id, deviceAvailabilitySignature, setDeviceTerminalOpen]);
+    }, [device?.id, router, setDeviceTerminalOpen]);
 
     useEffect(() => {
-        if (!isTerminalOpen || !terminalContainerRef.current) {
+        if (!device?.id || !terminalContainerRef.current || isLoading || loadError) {
             return;
         }
 
@@ -679,8 +522,11 @@ function DevicePage({
         let passwordBuffer = "";
         let resizeFrameId = null;
         let initialFitFrameId = null;
+        const nextTerminalMode = terminalMode;
         const sshAddress = device?.address;
         const sshPort = device?.port;
+        const serialPath = device?.path;
+        const serialBaudRate = Number(device?.baudRate) || 115200;
 
         function safeFit() {
             if (
@@ -738,7 +584,7 @@ function DevicePage({
         }
 
         function promptForPassword() {
-            if (!terminal || disposed) {
+            if (!terminal || disposed || nextTerminalMode !== "ssh") {
                 return;
             }
 
@@ -789,6 +635,7 @@ function DevicePage({
 
             try {
                 setTerminalError("");
+                setAvailabilityMessage("");
 
                 const session = await window.electron.openDeviceTerminal({
                     id: device.id,
@@ -811,16 +658,14 @@ function DevicePage({
                     isConnecting = false;
                     isRemoteConnected = false;
                     setDeviceTerminalOpen(device.id, false);
-                    setIsTerminalOpen(false);
                     setTerminalError("");
-                    setAvailabilityMessage(
-                        session?.message || "SSH connection is not available for this device."
-                    );
+                    setAvailabilityMessage(session?.message || terminalAvailabilityMessage);
                     return;
                 }
 
                 isRemoteConnected = true;
                 isConnecting = false;
+                setDeviceTerminalOpen(device.id, true);
 
                 if (!session?.reused) {
                     terminal.writeln("");
@@ -831,7 +676,8 @@ function DevicePage({
                 isConnecting = false;
                 isRemoteConnected = false;
 
-                const nextMessage = error?.message || "Unable to open the SSH terminal.";
+                const nextMessage =
+                    error?.message || "Unable to open the SSH terminal.";
 
                 if (isAuthErrorMessage(nextMessage) && !password) {
                     promptForPassword();
@@ -839,6 +685,56 @@ function DevicePage({
                 }
 
                 setTerminalError(nextMessage);
+            }
+        }
+
+        async function openSerialSession() {
+            if (!terminal || disposed || isConnecting) {
+                return;
+            }
+
+            isConnecting = true;
+
+            try {
+                setTerminalError("");
+                setAvailabilityMessage("");
+
+                const session = await window.electron.openDeviceTerminal({
+                    id: device.id,
+                    path: serialPath,
+                    baudRate: serialBaudRate,
+                    transport: device?.transport,
+                    type: device?.type,
+                    cols: terminal.cols,
+                    rows: terminal.rows,
+                });
+
+                if (session?.error) {
+                    isConnecting = false;
+                    isRemoteConnected = false;
+                    setDeviceTerminalOpen(device.id, false);
+                    setTerminalError("");
+                    setAvailabilityMessage(session?.message || terminalAvailabilityMessage);
+                    return;
+                }
+
+                isRemoteConnected = true;
+                isConnecting = false;
+                setDeviceTerminalOpen(device.id, true);
+
+                if (!session?.reused) {
+                    terminal.writeln("");
+                    terminal.writeln(
+                        `[serial] connected to ${serialPath} at ${serialBaudRate} baud`
+                    );
+                    terminal.writeln("[serial] waiting for device output...");
+                }
+
+                attachRemoteInput();
+            } catch (error) {
+                isConnecting = false;
+                isRemoteConnected = false;
+                setTerminalError(error?.message || "Unable to open the serial console.");
             }
         }
 
@@ -871,9 +767,9 @@ function DevicePage({
                 safeFit();
             });
 
-            if (!sshAddress) {
-                setIsTerminalOpen(false);
-                setAvailabilityMessage("SSH connection is not available for this device.");
+            if (!nextTerminalMode) {
+                setDeviceTerminalOpen(device.id, false);
+                setAvailabilityMessage(terminalAvailabilityMessage);
                 return;
             }
 
@@ -891,12 +787,23 @@ function DevicePage({
                 }
 
                 terminal.writeln("");
-                terminal.writeln(`[ssh] session closed`);
+                terminal.writeln(
+                    nextTerminalMode === "ssh"
+                        ? "[ssh] session closed"
+                        : "[serial] session closed"
+                );
             });
 
-            terminal.writeln(`$ ssh arduino@${sshAddress}`);
             setTerminalError("");
-            await openSshSession();
+            setAvailabilityMessage("");
+
+            if (nextTerminalMode === "ssh") {
+                terminal.writeln(`$ ssh arduino@${sshAddress}`);
+                await openSshSession();
+            } else {
+                terminal.writeln(`$ serial ${serialPath}`);
+                await openSerialSession();
+            }
 
             handleResize = () => {
                 cancelScheduledResize();
@@ -908,18 +815,16 @@ function DevicePage({
                         return;
                     }
 
-                    if (!safeFit()) {
+                    if (!safeFit() || !isRemoteConnected) {
                         return;
                     }
 
-                    if (!isRemoteConnected) {
-                        return;
-                    }
-
-                    window.electron.resizeDeviceTerminal(device.id, {
-                        cols: terminal.cols,
-                        rows: terminal.rows,
-                    }).catch(() => {});
+                    window.electron
+                        .resizeDeviceTerminal(device.id, {
+                            cols: terminal.cols,
+                            rows: terminal.rows,
+                        })
+                        .catch(() => {});
                 });
             };
 
@@ -930,13 +835,19 @@ function DevicePage({
                 if (!fitAddon || !terminal) {
                     return;
                 }
+
                 handleResize();
             });
             resizeObserver.observe(observeTarget);
         }
 
         mountTerminal().catch((error) => {
-            setTerminalError(error?.message || "Unable to open the SSH terminal.");
+            setTerminalError(
+                error?.message ||
+                    (nextTerminalMode === "ssh"
+                        ? "Unable to open the SSH terminal."
+                        : "Unable to open the serial console.")
+            );
         });
 
         return () => {
@@ -964,85 +875,45 @@ function DevicePage({
         };
     }, [
         device?.address,
+        device?.baudRate,
         device?.id,
+        device?.path,
         device?.port,
-        isTerminalOpen,
+        device?.transport,
+        device?.type,
+        isLoading,
+        loadError,
         setDeviceTerminalOpen,
-        terminalConnectionSignature,
+        terminalAvailabilityMessage,
+        terminalMode,
     ]);
 
     return (
-        <Layout title={device?.alias || device?.name || <div>
-            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-neutral-500 animate-spin !h-[14px] !w-[14px] lucide lucide-loader-circle-icon lucide-loader-circle"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
-        </div>} buttons={
-            isTerminalOpen
-                ? <div
-                    onClick={handleCloseTerminal}
-                    className="cursor-pointer rounded-md p-1.5 text-neutral-400 hover:bg-neutral-100 hover:text-black dark:hover:bg-neutral-800 dark:hover:text-white"
-                >
-                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="!h-[14px] !w-[14px] lucide lucide-panel-bottom-close-icon lucide-panel-bottom-close"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 15h18"/><path d="m15 8-3 3-3-3"/></svg>
-                </div>
-                : <div disabled={device?.alias || device?.name}
-                    onClick={handleOpenTerminal}
-                    className="cursor-pointer rounded-md p-1.5 text-neutral-400 hover:bg-neutral-100 hover:text-black dark:hover:bg-neutral-800 dark:hover:text-white"
-                >
-                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="!h-[14px] !w-[14px] lucide lucide-panel-bottom-open-icon lucide-panel-bottom-open"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 15h18"/><path d="m9 10 3-3 3 3"/></svg>
-                </div>
-        }>
-            <div ref={pageContainerRef} className="h-full overflow-hidden">
-                <ResizablePanelGroup
-                    ref={panelGroupRef}
-                    direction="vertical"
-                    className="h-full overflow-hidden"
-                    onLayout={handleTerminalLayout}
-                >
-                    <ResizablePanel defaultSize={100} className="min-h-0">
-                        <div className="relative h-full overflow-y-auto">
-                            {isLoading ? null : null}
-                            {loadError ? (
-                                <div className="flex max-w-[720px] flex-col gap-2">
-                                    <h2 className="text-lg font-semibold">Device not found</h2>
-                                    <p className="text-sm text-neutral-500">
-                                        {loadError}
-                                    </p>
-                                </div>
-                            ) : null}
-                            {availabilityMessage ? (
-                                <div className="p-6">
-                                    <div className="absolute bottom-6 right-6 rounded-lg border border-amber-900 bg-amber-950/40 px-2.5 py-1.5 text-xs font-medium text-amber-300">
-                                        {availabilityMessage}
-                                    </div>
-                                </div>
-                            ) : null}
+        <Layout title={device?.alias || device?.name || <LoadingTitle />}>
+            <div className="h-full overflow-hidden">
+                <div className="relative h-full w-full overflow-hidden border-t bg-black">
+                    {loadError ? (
+                        <div className="flex h-full items-center justify-center p-6 text-center text-sm font-medium text-red-300">
+                            {loadError}
                         </div>
-                    </ResizablePanel>
-                    {isTerminalOpen ? (
-                        <>
-                            <ResizableHandle className="px-3 !bg-transparent after:hidden data-[panel-group-direction=vertical]:!bg-transparent">
-                                <span className="z-10 inline-flex w-full items-center justify-center">
-                                    <div className="h-1 w-12 rounded-full bg-neutral-300 dark:bg-neutral-600 hover:bg-blue-600" />
-                                </span>
-                            </ResizableHandle>
-                            <ResizablePanel
-                                defaultSize={30}
-                                minSize={minTerminalSize}
-                                maxSize={maxTerminalSize}
-                                className="min-h-[200px] max-h-[600px] overflow-hidden"
-                            >
-                                <div className="h-full w-full p-3">
-                                    <div className="relative h-full w-full overflow-hidden rounded-lg border border-neutral-800 bg-black">
-                                        {terminalError ? (
-                                            <div className="absolute left-3 right-3 top-3 z-10 rounded-md border border-red-900 bg-red-950/40 px-3 py-2 text-xs font-semibold text-red-300">
-                                                {terminalError}
-                                            </div>
-                                        ) : null}
-                                        <div ref={terminalContainerRef} className="h-full w-full overflow-hidden bg-black p-2" />
-                                    </div>
-                                </div>
-                            </ResizablePanel>
-                        </>
                     ) : null}
-                </ResizablePanelGroup>
+                    {!loadError && terminalError ? (
+                        <div className="absolute left-3 right-3 top-3 z-10 rounded-md border border-red-900 bg-red-950/40 px-3 py-2 text-xs font-semibold text-red-300">
+                            {terminalError}
+                        </div>
+                    ) : null}
+                    {!loadError && availabilityMessage ? (
+                        <div className="absolute left-3 right-3 top-3 z-10 rounded-md border border-amber-900 bg-amber-950/40 px-3 py-2 text-xs font-semibold text-amber-300">
+                            {availabilityMessage}
+                        </div>
+                    ) : null}
+                    {!loadError ? (
+                        <div
+                            ref={terminalContainerRef}
+                            className="h-full w-full overflow-hidden bg-black p-2"
+                        />
+                    ) : null}
+                </div>
             </div>
             <Dialog
                 open={Boolean(unavailableDevice)}
@@ -1054,17 +925,18 @@ function DevicePage({
             >
                 <DialogContent className="sm:max-w-md p-3">
                     <DialogHeader>
-                        <DialogTitle className="font-semibold text-sm">
+                        <DialogTitle className="text-sm font-semibold">
                             Device offline
                         </DialogTitle>
-                        <DialogDescription className="font-semibold text-xs">
-                            {(unavailableDevice?.alias || unavailableDevice?.name || "This device")} is no longer available. Check the device connection and try again.
+                        <DialogDescription className="text-xs font-semibold">
+                            {(unavailableDevice?.alias || unavailableDevice?.name || "This device")} is no
+                            longer available. Check the device connection and try again.
                         </DialogDescription>
                     </DialogHeader>
                     <DialogFooter>
                         <Button
                             onClick={() => setUnavailableDevice(null)}
-                            className="rounded-lg h-7 !font-semibold !text-xs border bg-white hover:bg-neutral-50 text-black dark:text-white dark:bg-neutral-800 dark:border-neutral-700"
+                            className="h-7 rounded-lg border bg-white text-xs font-semibold text-black hover:bg-neutral-50 dark:border-neutral-700 dark:bg-neutral-800 dark:text-white"
                         >
                             OK
                         </Button>
@@ -1075,14 +947,8 @@ function DevicePage({
     );
 }
 
-const mapStateToProps = (state) => ({
-    terminalHeight: state.ui?.terminalHeight ?? 320,
-    deviceTerminalOpenById: state.ui?.deviceTerminalOpenById ?? {},
-});
-
 const mapDispatchToProps = {
     setDeviceTerminalOpen,
-    setTerminalHeight,
 };
 
-export default connect(mapStateToProps, mapDispatchToProps)(DevicePage);
+export default connect(null, mapDispatchToProps)(DevicePage);

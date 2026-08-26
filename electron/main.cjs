@@ -1094,6 +1094,14 @@ async function openSshDeviceTerminal(payload) {
 
   if (existingSession?.stream) {
     resizeDeviceTerminal(deviceId, cols, rows);
+    refreshDeviceTerminalInactivityTimer(deviceId);
+
+    try {
+      existingSession.stream.write("\n");
+    } catch (error) {
+      // Ignore prompt refresh failures on reused sessions.
+    }
+
     return {
       deviceId,
       address,
