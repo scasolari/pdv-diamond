@@ -162,7 +162,7 @@ export default function General() {
             <div className="flex flex-col gap-4">
                 <div className="flex flex-row justify-between items-center">
                     <div className="flex flex-col gap-1">
-                        <h3 className="font-semibold text-sm">Theme</h3>
+                        <h3 className="font-semibold text-xs">Theme</h3>
                         <p className="font-semibold text-xs text-neutral-500">Choose how Placedv AI looks across the app.</p>
                     </div>
                     <div>
@@ -189,7 +189,7 @@ export default function General() {
                 <div className="flex flex-row justify-between items-center">
                     <div className="flex flex-col gap-1">
                         <div className="flex flex-row gap-3 items-center">
-                            <h3 className="font-semibold text-sm items-center">Delete confirmation</h3>
+                            <h3 className="font-semibold text-xs items-center">Delete confirmation</h3>
                         </div>
                         <p className="font-semibold text-xs text-neutral-500">
                             Ask before deleting a thread and its chat history.
@@ -206,7 +206,7 @@ export default function General() {
                 <div className="flex flex-row justify-between items-center">
                     <div className="flex flex-col gap-1">
                         <div className="flex flex-row gap-3 items-center">
-                            <h3 className="font-semibold text-sm items-center">Archive confirmation</h3>
+                            <h3 className="font-semibold text-xs items-center">Archive confirmation</h3>
                         </div>
                         <p className="font-semibold text-xs text-neutral-500">
                             Require a second click on the inline archive action before a thread is archived.
@@ -223,7 +223,7 @@ export default function General() {
                 <div className="flex flex-row justify-between items-center">
                     <div className="flex flex-col gap-1">
                         <div className="flex flex-row gap-3 items-center">
-                            <h3 className="font-semibold text-sm items-center">Version</h3>
+                            <h3 className="font-semibold text-xs items-center">Version</h3>
                             <span className="font-semibold text-xs text-neutral-500">{appInfo?.version || `No info`}</span>
                         </div>
                         <p className="font-semibold text-xs text-neutral-500">

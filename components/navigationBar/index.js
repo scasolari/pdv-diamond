@@ -232,10 +232,39 @@ function buildSavedDevicesStatusSignature(savedDevices) {
         .join("::");
 }
 
+function flattenDetectedDevices(result) {
+    return [
+        ...(result?.groups?.usb || []),
+        ...(result?.groups?.network || []),
+        ...(result?.connected || []),
+    ];
+}
+
 function NavigationBar(props) {
     const { profile, setProfile, ui, addSavedDevice, setSavedDevices } = props;
     const [open, setOpen] = useState(false)
     const [paletteMode, setPaletteMode] = useState("search")
+    const [isMissionDialogOpen, setIsMissionDialogOpen] = useState(false)
+    const [missionName, setMissionName] = useState("")
+    const [missionSelectedDeviceId, setMissionSelectedDeviceId] = useState("")
+    const [missionDetectedDevices, setMissionDetectedDevices] = useState([])
+    const [missionDetectedDevicesLoading, setMissionDetectedDevicesLoading] = useState(false)
+    const [missionDetectedDevicesError, setMissionDetectedDevicesError] = useState("")
+    const [missionSelectedDetectedDeviceId, setMissionSelectedDetectedDeviceId] = useState("")
+    const [missionSshUser, setMissionSshUser] = useState("arduino")
+    const [missionSshPassword, setMissionSshPassword] = useState("")
+    const [missionDirectories, setMissionDirectories] = useState([])
+    const [missionRemoteFiles, setMissionRemoteFiles] = useState([])
+    const [missionRemotePath, setMissionRemotePath] = useState("")
+    const [missionDirectoriesLoading, setMissionDirectoriesLoading] = useState(false)
+    const [missionDirectoriesError, setMissionDirectoriesError] = useState("")
+    const [missionAuthRequired, setMissionAuthRequired] = useState(false)
+    const [missionNewDirectoryName, setMissionNewDirectoryName] = useState("")
+    const [missionFiles, setMissionFiles] = useState([])
+    const [missionEntrypoint, setMissionEntrypoint] = useState("")
+    const [missionNotes, setMissionNotes] = useState("")
+    const [missionSubmitError, setMissionSubmitError] = useState("")
+    const [missionSubmitting, setMissionSubmitting] = useState(false)
     const [selectedDevice, setSelectedDevice] = useState(null)
     const [isDeviceDetailsOpen, setIsDeviceDetailsOpen] = useState(false)
     const [deviceAlias, setDeviceAlias] = useState("")
@@ -341,7 +370,52 @@ function NavigationBar(props) {
         })),
         [ui?.savedDevices]
     );
+    const missionSelectedSavedDevice = useMemo(
+        () => (ui?.savedDevices || []).find((device) => device.id === missionSelectedDeviceId) || null,
+        [missionSelectedDeviceId, ui?.savedDevices]
+    );
+    const missionResolvedDevice = useMemo(() => {
+        if (!missionSelectedSavedDevice) {
+            return null;
+        }
 
+        const detectedMatch = missionDetectedDevices.find((detectedDevice) =>
+            isSavedDeviceMatchedByDetection(missionSelectedSavedDevice, detectedDevice)
+        );
+        const preferredSibling = detectedMatch
+            ? null
+            : findPreferredDetectedSibling(missionSelectedSavedDevice, missionDetectedDevices);
+        const resolvedDevice = detectedMatch || preferredSibling;
+
+        if (!resolvedDevice) {
+            return missionSelectedSavedDevice;
+        }
+
+        return {
+            ...missionSelectedSavedDevice,
+            address: resolvedDevice.address ?? missionSelectedSavedDevice.address ?? null,
+            port: resolvedDevice.port ?? missionSelectedSavedDevice.port ?? null,
+            protocol: resolvedDevice.protocol ?? missionSelectedSavedDevice.protocol ?? null,
+            path: resolvedDevice.path ?? missionSelectedSavedDevice.path ?? null,
+        };
+    }, [missionDetectedDevices, missionSelectedSavedDevice]);
+    const missionEntrypointOptions = useMemo(() => {
+        const optionNames = new Set();
+
+        missionRemoteFiles.forEach((file) => {
+            if (file?.name) {
+                optionNames.add(file.name);
+            }
+        });
+
+        missionFiles.forEach((file) => {
+            if (file?.name) {
+                optionNames.add(file.name);
+            }
+        });
+
+        return Array.from(optionNames);
+    }, [missionFiles, missionRemoteFiles]);
     useEffect(() => {
         statusTrackedSavedDevicesRef.current = statusTrackedSavedDevices;
     }, [statusTrackedSavedDevices]);
@@ -374,11 +448,365 @@ function NavigationBar(props) {
         };
     }, []);
 
+    function resetMissionDialogState() {
+        setMissionName("");
+        setMissionSelectedDeviceId("");
+        setMissionDetectedDevices([]);
+        setMissionDetectedDevicesLoading(false);
+        setMissionDetectedDevicesError("");
+        setMissionSelectedDetectedDeviceId("");
+        setMissionSshUser("arduino");
+        setMissionSshPassword("");
+        setMissionDirectories([]);
+        setMissionRemoteFiles([]);
+        setMissionRemotePath("");
+        setMissionDirectoriesLoading(false);
+        setMissionDirectoriesError("");
+        setMissionAuthRequired(false);
+        setMissionNewDirectoryName("");
+        setMissionFiles([]);
+        setMissionEntrypoint("");
+        setMissionNotes("");
+        setMissionSubmitError("");
+        setMissionSubmitting(false);
+    }
+
+    function closeMissionDialog() {
+        setIsMissionDialogOpen(false);
+        resetMissionDialogState();
+    }
+
+    async function persistDetectedDevice(device, aliasOverride) {
+        const response = await fetch("/api/devices", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+                sourceKey: device.id,
+                alias: aliasOverride?.trim() || device.name,
+                name: device.name,
+                transport: device.transport,
+                type: device.type,
+                source: device.source,
+                path: device.path ?? null,
+                address: device.address ?? null,
+                port: device.port ?? null,
+                protocol: device.protocol ?? null,
+                manufacturer: device.manufacturer ?? null,
+                serialNumber: device.serialNumber ?? null,
+                vendorId: device.vendorId ?? null,
+                productId: device.productId ?? null,
+                pnpId: device.pnpId ?? null,
+                mac: device.mac ?? null,
+                interface: device.interface ?? null,
+            }),
+        });
+        const savedDevice = await response.json();
+
+        if (!response.ok) {
+            throw new Error(savedDevice?.message || "Unable to save detected device.");
+        }
+
+        await refreshSavedDevices();
+        return savedDevice;
+    }
+
+    async function loadMissionDetectedDevices() {
+        if (!window?.electron?.listDevices) {
+            return;
+        }
+
+        setMissionDetectedDevicesLoading(true);
+        setMissionDetectedDevicesError("");
+
+        try {
+            const result = await window.electron.listDevices();
+            setMissionDetectedDevices(flattenDetectedDevices(result));
+        } catch (error) {
+            setMissionDetectedDevicesError("Unable to load detected devices.");
+        } finally {
+            setMissionDetectedDevicesLoading(false);
+        }
+    }
+
+    async function handleMissionBrowseDirectories(nextPath = null) {
+        if (!window?.electron?.listMissionRemoteDirectories) {
+            return;
+        }
+
+        if (!missionResolvedDevice?.address) {
+            setMissionDirectories([]);
+            setMissionDirectoriesError("This device does not expose an SSH address for remote mission folders.");
+            setMissionAuthRequired(false);
+            return;
+        }
+
+        setMissionDirectoriesLoading(true);
+        setMissionDirectoriesError("");
+        setMissionSubmitError("");
+        setMissionAuthRequired(false);
+
+        try {
+            const result = await window.electron.listMissionRemoteDirectories({
+                id: missionResolvedDevice.id,
+                address: missionResolvedDevice.address,
+                port: missionResolvedDevice.port ?? undefined,
+                sshUser: missionSshUser.trim() || "arduino",
+                password: missionSshPassword || undefined,
+                remotePath: nextPath || missionRemotePath || undefined,
+            });
+
+            if (result?.authRequired) {
+                setMissionAuthRequired(true);
+                setMissionDirectories([]);
+                setMissionRemoteFiles([]);
+                setMissionDirectoriesError("SSH authentication is required to read remote folders.");
+                return;
+            }
+
+            const nextRemoteFiles = result?.files || [];
+            setMissionDirectories(result?.directories || []);
+            setMissionRemoteFiles(nextRemoteFiles);
+            setMissionRemotePath(result?.remotePath || nextPath || missionRemotePath);
+            setMissionEntrypoint((currentEntrypoint) => {
+                const nextOptionNames = new Set([
+                    ...nextRemoteFiles.map((file) => file?.name).filter(Boolean),
+                    ...missionFiles.map((file) => file?.name).filter(Boolean),
+                ]);
+
+                if (currentEntrypoint && nextOptionNames.has(currentEntrypoint)) {
+                    return currentEntrypoint;
+                }
+
+                const mainRemoteFile = nextRemoteFiles.find((file) => file?.name === "main.py");
+                if (mainRemoteFile?.name) {
+                    return mainRemoteFile.name;
+                }
+
+                const firstRemoteFile = nextRemoteFiles[0]?.name;
+                if (firstRemoteFile) {
+                    return firstRemoteFile;
+                }
+
+                const mainUploadedFile = missionFiles.find((file) => file?.name === "main.py");
+                if (mainUploadedFile?.name) {
+                    return mainUploadedFile.name;
+                }
+
+                return missionFiles[0]?.name || "";
+            });
+        } catch (error) {
+            setMissionDirectories([]);
+            setMissionRemoteFiles([]);
+            setMissionDirectoriesError(error?.message || "Unable to read remote folders.");
+        } finally {
+            setMissionDirectoriesLoading(false);
+        }
+    }
+
+    async function handleMissionCreateDirectory() {
+        if (!window?.electron?.createMissionRemoteDirectory) {
+            return;
+        }
+
+        if (!missionResolvedDevice?.address) {
+            setMissionDirectoriesError("This device does not expose an SSH address for remote mission folders.");
+            return;
+        }
+
+        const directoryName = missionNewDirectoryName.trim();
+
+        if (!directoryName) {
+            setMissionDirectoriesError("Enter a new directory name.");
+            return;
+        }
+
+        setMissionDirectoriesLoading(true);
+        setMissionDirectoriesError("");
+        setMissionSubmitError("");
+        setMissionAuthRequired(false);
+
+        try {
+            const result = await window.electron.createMissionRemoteDirectory({
+                id: missionResolvedDevice.id,
+                address: missionResolvedDevice.address,
+                port: missionResolvedDevice.port ?? undefined,
+                sshUser: missionSshUser.trim() || "arduino",
+                password: missionSshPassword || undefined,
+                parentPath: missionRemotePath,
+                directoryName,
+            });
+
+            if (result?.authRequired) {
+                setMissionAuthRequired(true);
+                setMissionDirectoriesError("SSH authentication is required to create remote folders.");
+                return;
+            }
+
+            setMissionNewDirectoryName("");
+            await handleMissionBrowseDirectories(result?.remotePath || missionRemotePath);
+        } catch (error) {
+            setMissionDirectoriesError(error?.message || "Unable to create the remote folder.");
+        } finally {
+            setMissionDirectoriesLoading(false);
+        }
+    }
+
+    function handleMissionFilesChange(event) {
+        const nextFiles = Array.from(event.target.files || []).filter((file) =>
+            String(file?.name || "").toLowerCase().endsWith(".py")
+        );
+
+        setMissionFiles(nextFiles);
+
+        if (!nextFiles.length) {
+            setMissionEntrypoint((currentEntrypoint) => {
+                if (currentEntrypoint && missionRemoteFiles.some((file) => file.name === currentEntrypoint)) {
+                    return currentEntrypoint;
+                }
+
+                const mainRemoteFile = missionRemoteFiles.find((file) => file.name === "main.py");
+                return mainRemoteFile?.name || missionRemoteFiles[0]?.name || "";
+            });
+            return;
+        }
+
+        setMissionEntrypoint((currentEntrypoint) => {
+            if (
+                currentEntrypoint &&
+                (nextFiles.some((file) => file.name === currentEntrypoint) ||
+                    missionRemoteFiles.some((file) => file.name === currentEntrypoint))
+            ) {
+                return currentEntrypoint;
+            }
+
+            const mainFile = nextFiles.find((file) => file.name === "main.py");
+            return mainFile?.name || nextFiles[0].name;
+        });
+    }
+
+    function readFileAsBase64(file) {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+
+            reader.onload = () => {
+                const result = String(reader.result || "");
+                const dataBase64 = result.includes(",") ? result.split(",").pop() : "";
+                resolve(dataBase64 || "");
+            };
+
+            reader.onerror = () => {
+                reject(new Error(`Unable to read ${file?.name || "file"}.`));
+            };
+
+            reader.readAsDataURL(file);
+        });
+    }
+
+    async function handleCreateMission() {
+        const name = missionName.trim();
+        const deviceId = missionSelectedDeviceId;
+        const remotePath = missionRemotePath.trim();
+        const entrypoint = missionEntrypoint.trim();
+
+        if (!name || !deviceId || !remotePath || !entrypoint) {
+            setMissionSubmitError("Name, device, remote folder, and entrypoint are required.");
+            return;
+        }
+
+        if (!missionResolvedDevice?.address) {
+            setMissionSubmitError("This device does not expose an SSH address for mission management.");
+            return;
+        }
+
+        setMissionSubmitting(true);
+        setMissionSubmitError("");
+        setMissionAuthRequired(false);
+
+        try {
+            if (missionFiles.length && window?.electron?.uploadMissionFiles) {
+                const filesPayload = await Promise.all(
+                    missionFiles.map(async (file) => ({
+                        name: file.name,
+                        dataBase64: await readFileAsBase64(file),
+                    }))
+                );
+
+                const uploadResult = await window.electron.uploadMissionFiles({
+                    id: missionResolvedDevice.id,
+                    address: missionResolvedDevice.address,
+                    port: missionResolvedDevice.port ?? undefined,
+                    sshUser: missionSshUser.trim() || "arduino",
+                    password: missionSshPassword || undefined,
+                    remotePath,
+                    files: filesPayload,
+                });
+
+                if (uploadResult?.authRequired) {
+                    setMissionAuthRequired(true);
+                    setMissionSubmitError("SSH authentication is required to upload mission files.");
+                    return;
+                }
+            }
+
+            const response = await fetch("/api/missions", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                    name,
+                    deviceId,
+                    remotePath,
+                    entrypoint,
+                    notes: missionNotes.trim(),
+                    files: missionFiles.map((file) => ({
+                        name: file.name,
+                        size: file.size,
+                    })),
+                }),
+            });
+            const result = await response.json();
+
+            if (!response.ok) {
+                throw new Error(result?.message || "Unable to create the mission.");
+            }
+
+            closeMissionDialog();
+        } catch (error) {
+            setMissionSubmitError(error?.message || "Unable to create the mission.");
+        } finally {
+            setMissionSubmitting(false);
+        }
+    }
+
     function handleDetectedDeviceSelect(device) {
         setSelectedDevice(device);
         setDeviceAlias(device?.name || "");
         setOpen(false);
         setIsDeviceDetailsOpen(true);
+    }
+
+    async function handleMissionAddDetectedDevice() {
+        if (!missionSelectedDetectedDeviceId) {
+            return;
+        }
+
+        const detectedDevice = missionDetectedDevices.find((device) => device.id === missionSelectedDetectedDeviceId);
+
+        if (!detectedDevice) {
+            return;
+        }
+
+        try {
+            const savedDevice = await persistDetectedDevice(detectedDevice, detectedDevice.name);
+            setMissionSelectedDeviceId(savedDevice.id);
+            setMissionSelectedDetectedDeviceId("");
+            setMissionSubmitError("");
+        } catch (error) {
+            setMissionSubmitError(error?.message || "Unable to add the detected device.");
+        }
     }
 
     function getSavedDeviceStatus(deviceId) {
@@ -577,33 +1005,7 @@ function NavigationBar(props) {
         }
 
         try {
-            const response = await fetch("/api/devices", {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                },
-                body: JSON.stringify({
-                    sourceKey: selectedDevice.id,
-                    alias: deviceAlias.trim() || selectedDevice.name,
-                    name: selectedDevice.name,
-                    transport: selectedDevice.transport,
-                    type: selectedDevice.type,
-                    source: selectedDevice.source,
-                    path: selectedDevice.path ?? null,
-                    address: selectedDevice.address ?? null,
-                    port: selectedDevice.port ?? null,
-                    protocol: selectedDevice.protocol ?? null,
-                    manufacturer: selectedDevice.manufacturer ?? null,
-                    serialNumber: selectedDevice.serialNumber ?? null,
-                    vendorId: selectedDevice.vendorId ?? null,
-                    productId: selectedDevice.productId ?? null,
-                    pnpId: selectedDevice.pnpId ?? null,
-                    mac: selectedDevice.mac ?? null,
-                    interface: selectedDevice.interface ?? null,
-                }),
-            });
-            const savedDevice = await response.json();
-
+            const savedDevice = await persistDetectedDevice(selectedDevice, deviceAlias.trim() || selectedDevice.name);
             addSavedDevice(savedDevice);
             setIsDeviceDetailsOpen(false);
             setSelectedDevice(null);
@@ -875,6 +1277,30 @@ function NavigationBar(props) {
     }, []);
 
     useEffect(() => {
+        if (!isMissionDialogOpen) {
+            return;
+        }
+
+        void loadMissionDetectedDevices();
+
+        if (!missionSelectedDeviceId && ui?.savedDevices?.length) {
+            setMissionSelectedDeviceId(ui.savedDevices[0].id);
+        }
+    }, [isMissionDialogOpen, missionSelectedDeviceId, ui?.savedDevices]);
+
+    useEffect(() => {
+        if (!isMissionDialogOpen) {
+            return;
+        }
+
+        setMissionDirectories([]);
+        setMissionRemoteFiles([]);
+        setMissionDirectoriesError("");
+        setMissionAuthRequired(false);
+        setMissionRemotePath(`/home/${missionSshUser.trim() || "arduino"}`);
+    }, [isMissionDialogOpen, missionSelectedDeviceId, missionSshUser]);
+
+    useEffect(() => {
         if (!open || !isDevicePalette || !window?.electron?.listDevices) {
             return;
         }
@@ -937,7 +1363,7 @@ function NavigationBar(props) {
                 style={{ WebkitAppRegion: "drag" }}
             >
                 <Link href="/app/dashboard" className="absolute font-semibold text-sm w-fit z-50">
-                    Placedv
+                    Placedv Labs
                 </Link>
             </div>
             {linkActive("/app/dashboard") || linkActive("/app/device")
@@ -1189,7 +1615,20 @@ function NavigationBar(props) {
                                     ))}
                                 </ul>
                             ) : null}
-                        </div>
+                        </div>{/*
+                        <div className="px-3 pb-3">
+                            <div className="flex flex-row items-center justify-between">
+                                <h2 className="font-semibold !text-xs text-neutral-400">
+                                    Missions
+                                </h2>
+                                <div
+                                    onClick={() => setIsMissionDialogOpen(true)}
+                                    className="text-neutral-400 hover:text-black p-1.5 hover:bg-neutral-100 dark:hover:bg-neutral-800 dark:hover:text-white rounded-md cursor-pointer"
+                                >
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" class="!h-[14px] !w-[14px] lucide lucide-plus-icon lucide-plus"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+                                </div>
+                            </div>
+                        </div>*/}
                     </div>
                     <ul className="shrink-0 p-3 grid gap-1">
                         {shouldShowUpdateEntry ? (
@@ -1297,6 +1736,301 @@ function NavigationBar(props) {
                             className="rounded-lg h-7 !font-semibold !text-xs border bg-blue-600 hover:bg-blue-700 border-blue-800 text-white dark:text-white dark:bg-neutral-800 dark:border-neutral-700"
                         >
                             Add device
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+            <Dialog
+                open={isMissionDialogOpen}
+                onOpenChange={(nextOpen) => {
+                    if (nextOpen) {
+                        setIsMissionDialogOpen(true);
+                        return;
+                    }
+
+                    closeMissionDialog();
+                }}
+            >
+                <DialogContent className="top-1/2 sm:max-w-2xl w-[calc(100vw-48px)] h-[min(600px,calc(100vh-64px))] max-h-[calc(100vh-64px)] overflow-hidden p-0 grid gap-0">
+                    <DialogHeader className="sticky top-0 z-10 border-b border-neutral-200 bg-white px-3 py-3 dark:border-neutral-800 dark:bg-neutral-900">
+                        <DialogTitle className="font-semibold text-sm">New mission</DialogTitle>
+                        <DialogDescription className="font-semibold text-xs !mt-0">
+                            Create a mission, authenticate over SSH, choose the remote folder, and upload Python files.
+                        </DialogDescription>
+                    </DialogHeader>
+                    <div className="flex-1 overflow-y-auto px-3 py-3">
+                        <div className="grid gap-4 text-xs font-semibold">
+                            <div className="grid gap-2">
+                                <label htmlFor="mission-name" className="text-neutral-500">Mission name</label>
+                                <Input
+                                    id="mission-name"
+                                    value={missionName}
+                                    onChange={(event) => setMissionName(event.target.value)}
+                                    className="h-7 p-0 rounded-lg border-0 border-neutral-200 ring-1 ring-neutral-200 dark:ring-neutral-700 bg-white dark:bg-neutral-800 px-3 text-xs font-semibold outline-none dark:border-neutral-800 focus-visible:ring-blue-500 dark:focus-visible:ring-blue-500"
+                                    placeholder="Payload validation run"
+                                />
+                            </div>
+
+                            <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
+                                <div className="grid gap-2">
+                                    <label htmlFor="mission-device" className="text-neutral-500">Saved device</label>
+                                    <select
+                                        id="mission-device"
+                                        value={missionSelectedDeviceId}
+                                        onChange={(event) => setMissionSelectedDeviceId(event.target.value)}
+                                        className="h-7 rounded-lg border-0 ring-1 ring-neutral-200 dark:ring-neutral-700 bg-white dark:bg-neutral-800 px-3 text-xs font-semibold outline-none dark:border-neutral-800 focus-visible:ring-blue-500 dark:focus-visible:ring-blue-500"
+                                    >
+                                        <option value="">Select a device</option>
+                                        {(ui?.savedDevices || []).map((device) => (
+                                            <option key={device.id} value={device.id}>
+                                                {device.alias || device.name}
+                                            </option>
+                                        ))}
+                                    </select>
+                                </div>
+                                <Button
+                                    type="button"
+                                    onClick={loadMissionDetectedDevices}
+                                    disabled={missionDetectedDevicesLoading}
+                                    className="rounded-lg h-7 !font-semibold !text-xs border bg-white hover:bg-neutral-50 text-black dark:text-white dark:bg-neutral-800 dark:border-neutral-700"
+                                >
+                                    Refresh detected
+                                </Button>
+                            </div>
+
+                            <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
+                                <div className="grid gap-2">
+                                    <label htmlFor="mission-detected-device" className="text-neutral-500">Add detected device</label>
+                                    <select
+                                        id="mission-detected-device"
+                                        value={missionSelectedDetectedDeviceId}
+                                        onChange={(event) => setMissionSelectedDetectedDeviceId(event.target.value)}
+                                        className="h-7 rounded-lg border-0 ring-1 ring-neutral-200 dark:ring-neutral-700 bg-white dark:bg-neutral-800 px-3 text-xs font-semibold outline-none dark:border-neutral-800 focus-visible:ring-blue-500 dark:focus-visible:ring-blue-500"
+                                    >
+                                        <option value="">Select detected device</option>
+                                        {missionDetectedDevices.map((device) => (
+                                            <option key={device.id} value={device.id}>
+                                                {device.name}{device.address ? ` · ${device.address}` : device.path ? ` · ${device.path}` : ""}
+                                            </option>
+                                        ))}
+                                    </select>
+                                </div>
+                                <Button
+                                    type="button"
+                                    onClick={handleMissionAddDetectedDevice}
+                                    disabled={!missionSelectedDetectedDeviceId}
+                                    className="rounded-lg h-7 !font-semibold !text-xs border bg-white hover:bg-neutral-50 text-black dark:text-white dark:bg-neutral-800 dark:border-neutral-700"
+                                >
+                                    Add device
+                                </Button>
+                            </div>
+
+                            {missionDetectedDevicesError ? (
+                                <p className="text-[11px] font-semibold text-red-500">{missionDetectedDevicesError}</p>
+                            ) : null}
+
+                            <div className="grid gap-3 md:grid-cols-2">
+                                <div className="grid gap-2">
+                                    <label htmlFor="mission-ssh-user" className="text-neutral-500">SSH user</label>
+                                    <Input
+                                        id="mission-ssh-user"
+                                        value={missionSshUser}
+                                        onChange={(event) => setMissionSshUser(event.target.value)}
+                                        className="h-7 p-0 rounded-lg border-0 border-neutral-200 ring-1 ring-neutral-200 dark:ring-neutral-700 bg-white dark:bg-neutral-800 px-3 text-xs font-semibold outline-none dark:border-neutral-800 focus-visible:ring-blue-500 dark:focus-visible:ring-blue-500"
+                                        placeholder="arduino"
+                                    />
+                                </div>
+                                <div className="grid gap-2">
+                                    <label htmlFor="mission-ssh-password" className="text-neutral-500">SSH password</label>
+                                    <Input
+                                        id="mission-ssh-password"
+                                        type="password"
+                                        value={missionSshPassword}
+                                        onChange={(event) => setMissionSshPassword(event.target.value)}
+                                        className="h-7 p-0 rounded-lg border-0 border-neutral-200 ring-1 ring-neutral-200 dark:ring-neutral-700 bg-white dark:bg-neutral-800 px-3 text-xs font-semibold outline-none dark:border-neutral-800 focus-visible:ring-blue-500 dark:focus-visible:ring-blue-500"
+                                        placeholder="Optional until requested"
+                                    />
+                                </div>
+                            </div>
+
+                            <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
+                                <div className="grid gap-2">
+                                    <label htmlFor="mission-remote-path" className="text-neutral-500">Remote folder</label>
+                                    <Input
+                                        id="mission-remote-path"
+                                        value={missionRemotePath}
+                                        onChange={(event) => setMissionRemotePath(event.target.value)}
+                                        className="h-7 p-0 rounded-lg border-0 border-neutral-200 ring-1 ring-neutral-200 dark:ring-neutral-700 bg-white dark:bg-neutral-800 px-3 text-xs font-semibold outline-none dark:border-neutral-800 focus-visible:ring-blue-500 dark:focus-visible:ring-blue-500"
+                                        placeholder="/home/arduino/missions/run-01"
+                                    />
+                                </div>
+                                <Button
+                                    type="button"
+                                    onClick={() => handleMissionBrowseDirectories()}
+                                    disabled={missionDirectoriesLoading || !missionSelectedDeviceId}
+                                    className="rounded-lg h-7 !font-semibold !text-xs border bg-white hover:bg-neutral-50 text-black dark:text-white dark:bg-neutral-800 dark:border-neutral-700"
+                                >
+                                    {missionDirectoriesLoading ? "Loading..." : "Load folders"}
+                                </Button>
+                            </div>
+
+                            {missionAuthRequired ? (
+                                <p className="text-[11px] font-semibold text-amber-500">
+                                    SSH authentication required. Enter the password and load the folders again.
+                                </p>
+                            ) : null}
+
+                            {missionDirectoriesError ? (
+                                <p className="text-[11px] font-semibold text-red-500">{missionDirectoriesError}</p>
+                            ) : null}
+
+                            <div className="grid gap-2">
+                                <div className="flex items-center justify-between">
+                                    <span className="text-neutral-500">Remote directories</span>
+                                    {missionRemotePath && missionRemotePath !== "/" ? (
+                                        <button
+                                            type="button"
+                                            onClick={() => {
+                                                const parentPath = missionRemotePath.split("/").slice(0, -1).join("/") || "/";
+                                                void handleMissionBrowseDirectories(parentPath);
+                                            }}
+                                            className="text-[11px] font-semibold text-blue-500"
+                                        >
+                                            Go up
+                                        </button>
+                                    ) : null}
+                                </div>
+                                <div className="max-h-32 overflow-y-auto rounded-xl border border-neutral-200 bg-white p-2 dark:border-neutral-800 dark:bg-neutral-900">
+                                    {missionDirectories.length ? (
+                                        <div className="grid gap-1">
+                                            {missionDirectories.map((directory) => (
+                                                <button
+                                                    key={directory.path}
+                                                    type="button"
+                                                    onClick={() => setMissionRemotePath(directory.path)}
+                                                    className={`rounded-lg px-2 py-1 text-left text-xs font-semibold ${missionRemotePath === directory.path ? `bg-blue-50 text-blue-600 dark:bg-neutral-800 dark:text-white` : `hover:bg-neutral-100 dark:hover:bg-neutral-800`}`}
+                                                >
+                                                    {directory.name}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    ) : (
+                                        <p className="text-[11px] font-semibold text-neutral-400">
+                                            {missionDirectoriesLoading ? "Reading remote folders..." : "No directories loaded yet."}
+                                        </p>
+                                    )}
+                                </div>
+                            </div>
+
+                            <div className="grid gap-2">
+                                <span className="text-neutral-500">Python files in selected folder</span>
+                                <div className="max-h-24 overflow-y-auto rounded-xl border border-neutral-200 bg-white p-2 dark:border-neutral-800 dark:bg-neutral-900">
+                                    {missionRemoteFiles.length ? (
+                                        <div className="flex flex-wrap gap-1">
+                                            {missionRemoteFiles.map((file) => (
+                                                <Badge key={file.path} variant="secondary" className="font-semibold text-[10px]">
+                                                    {file.name}
+                                                </Badge>
+                                            ))}
+                                        </div>
+                                    ) : (
+                                        <p className="text-[11px] font-semibold text-neutral-400">
+                                            No Python files found in the selected folder.
+                                        </p>
+                                    )}
+                                </div>
+                            </div>
+
+                            <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
+                                <div className="grid gap-2">
+                                    <label htmlFor="mission-new-directory" className="text-neutral-500">Create remote folder</label>
+                                    <Input
+                                        id="mission-new-directory"
+                                        value={missionNewDirectoryName}
+                                        onChange={(event) => setMissionNewDirectoryName(event.target.value)}
+                                        className="h-7 p-0 rounded-lg border-0 border-neutral-200 ring-1 ring-neutral-200 dark:ring-neutral-700 bg-white dark:bg-neutral-800 px-3 text-xs font-semibold outline-none dark:border-neutral-800 focus-visible:ring-blue-500 dark:focus-visible:ring-blue-500"
+                                        placeholder="mission-001"
+                                    />
+                                </div>
+                                <Button
+                                    type="button"
+                                    onClick={handleMissionCreateDirectory}
+                                    disabled={!missionNewDirectoryName.trim() || missionDirectoriesLoading || !missionRemotePath}
+                                    className="rounded-lg h-7 !font-semibold !text-xs border bg-white hover:bg-neutral-50 text-black dark:text-white dark:bg-neutral-800 dark:border-neutral-700"
+                                >
+                                    Create folder
+                                </Button>
+                            </div>
+
+                            <div className="grid gap-2">
+                                <label htmlFor="mission-files" className="text-neutral-500">Mission files (.py)</label>
+                                <input
+                                    id="mission-files"
+                                    type="file"
+                                    accept=".py"
+                                    multiple
+                                    onChange={handleMissionFilesChange}
+                                    className="block w-full rounded-lg border-0 ring-1 ring-neutral-200 dark:ring-neutral-700 bg-white dark:bg-neutral-800 px-3 py-2 text-xs font-semibold outline-none focus-visible:ring-blue-500 dark:focus-visible:ring-blue-500"
+                                />
+                                {missionFiles.length ? (
+                                    <div className="flex flex-wrap gap-1">
+                                        {missionFiles.map((file) => (
+                                            <Badge key={file.name} variant="secondary" className="font-semibold text-[10px]">
+                                                {file.name}
+                                            </Badge>
+                                        ))}
+                                    </div>
+                                ) : null}
+                            </div>
+
+                            <div className="grid gap-2">
+                                <label htmlFor="mission-entrypoint" className="text-neutral-500">Entrypoint</label>
+                                <select
+                                    id="mission-entrypoint"
+                                    value={missionEntrypoint}
+                                    onChange={(event) => setMissionEntrypoint(event.target.value)}
+                                    className="h-7 rounded-lg border-0 ring-1 ring-neutral-200 dark:ring-neutral-700 bg-white dark:bg-neutral-800 px-3 text-xs font-semibold outline-none dark:border-neutral-800 focus-visible:ring-blue-500 dark:focus-visible:ring-blue-500"
+                                >
+                                    <option value="">Select entrypoint</option>
+                                    {missionEntrypointOptions.map((fileName) => (
+                                        <option key={fileName} value={fileName}>
+                                            {fileName}
+                                        </option>
+                                    ))}
+                                </select>
+                            </div>
+
+                            <div className="grid gap-2">
+                                <label htmlFor="mission-notes" className="text-neutral-500">Notes</label>
+                                <textarea
+                                    id="mission-notes"
+                                    value={missionNotes}
+                                    onChange={(event) => setMissionNotes(event.target.value)}
+                                    rows={3}
+                                    className="rounded-lg border-0 ring-1 ring-neutral-200 dark:ring-neutral-700 bg-white dark:bg-neutral-800 px-3 py-2 text-xs font-semibold outline-none dark:border-neutral-800 focus-visible:ring-blue-500 dark:focus-visible:ring-blue-500"
+                                    placeholder="Optional mission notes"
+                                />
+                            </div>
+
+                            {missionSubmitError ? (
+                                <p className="text-[11px] font-semibold text-red-500">{missionSubmitError}</p>
+                            ) : null}
+                        </div>
+                    </div>
+                    <DialogFooter className="sticky bottom-0 z-10 border-t border-neutral-200 bg-white px-3 py-3 dark:border-neutral-800 dark:bg-neutral-900">
+                        <Button
+                            onClick={closeMissionDialog}
+                            className="rounded-lg h-7 !font-semibold !text-xs border bg-white hover:bg-neutral-50 text-black dark:text-white dark:bg-neutral-800 dark:border-neutral-700"
+                        >
+                            Cancel
+                        </Button>
+                        <Button
+                            onClick={handleCreateMission}
+                            type="button"
+                            disabled={missionSubmitting || !missionName.trim() || !missionSelectedDeviceId || !missionRemotePath.trim() || !missionEntrypoint.trim()}
+                            className="rounded-lg h-7 !font-semibold !text-xs border bg-blue-600 hover:bg-blue-700 border-blue-800 text-white dark:text-white dark:bg-neutral-800 dark:border-neutral-700"
+                        >
+                            {missionSubmitting ? "Creating..." : "Create mission"}
                         </Button>
                     </DialogFooter>
                 </DialogContent>

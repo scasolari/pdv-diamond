@@ -306,6 +306,8 @@ async function bootstrapLocalDatabaseWithSqlite(databasePath) {
     "CREATE TABLE IF NOT EXISTS `AppSetting` (`key` TEXT NOT NULL PRIMARY KEY, `value` TEXT NOT NULL, `updatedAt` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP);",
     "CREATE TABLE IF NOT EXISTS `SavedDevice` (`id` TEXT NOT NULL PRIMARY KEY, `sourceKey` TEXT NOT NULL, `alias` TEXT NOT NULL, `name` TEXT NOT NULL, `baudRate` INTEGER NOT NULL DEFAULT 115200, `transport` TEXT NOT NULL, `type` TEXT NOT NULL, `source` TEXT NOT NULL, `path` TEXT, `address` TEXT, `port` INTEGER, `protocol` TEXT, `manufacturer` TEXT, `serialNumber` TEXT, `vendorId` TEXT, `productId` TEXT, `pnpId` TEXT, `mac` TEXT, `interface` TEXT, `archivedAt` DATETIME, `createdAt` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, `updatedAt` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP);",
     "CREATE UNIQUE INDEX IF NOT EXISTS `SavedDevice_sourceKey_key` ON `SavedDevice`(`sourceKey`);",
+    "CREATE TABLE IF NOT EXISTS `Mission` (`id` TEXT NOT NULL PRIMARY KEY, `name` TEXT NOT NULL, `deviceId` TEXT NOT NULL, `remotePath` TEXT NOT NULL, `entrypoint` TEXT NOT NULL, `notes` TEXT, `filesJson` TEXT NOT NULL DEFAULT '[]', `status` TEXT NOT NULL DEFAULT 'draft', `createdAt` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, `updatedAt` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, CONSTRAINT `Mission_deviceId_fkey` FOREIGN KEY (`deviceId`) REFERENCES `SavedDevice` (`id`) ON DELETE CASCADE ON UPDATE CASCADE);",
+    "CREATE INDEX IF NOT EXISTS `Mission_deviceId_idx` ON `Mission`(`deviceId`);",
   ];
   const migrationStatements = [
     "ALTER TABLE `SavedDevice` ADD COLUMN `mac` TEXT;",
@@ -1008,6 +1010,276 @@ function getSshConnectionConfig(payload) {
       return existingEntry.fingerprint === fingerprint;
     },
   };
+}
+
+function connectSshClient(payload) {
+  return new Promise((resolve, reject) => {
+    const client = new SshClient();
+    let settled = false;
+
+    const finishReject = (error) => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      client.end();
+      reject(error);
+    };
+
+    client.on("ready", () => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      resolve(client);
+    });
+
+    client.on("error", (error) => {
+      finishReject(error);
+    });
+
+    client.on("keyboard-interactive", (_name, _instructions, _lang, prompts, finish) => {
+      const passwordPrompt = prompts?.find((prompt) =>
+        String(prompt?.prompt || "")
+          .toLowerCase()
+          .includes("password")
+      );
+
+      if (payload?.password && passwordPrompt) {
+        finish([payload.password]);
+        return;
+      }
+
+      finish([]);
+    });
+
+    client.connect(getSshConnectionConfig(payload));
+  });
+}
+
+function openSftpClient(client) {
+  return new Promise((resolve, reject) => {
+    client.sftp((error, sftp) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+
+      resolve(sftp);
+    });
+  });
+}
+
+function sftpReadDir(sftp, remotePath) {
+  return new Promise((resolve, reject) => {
+    sftp.readdir(remotePath, (error, list) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+
+      resolve(list || []);
+    });
+  });
+}
+
+function sftpStat(sftp, remotePath) {
+  return new Promise((resolve, reject) => {
+    sftp.stat(remotePath, (error, stats) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+
+      resolve(stats);
+    });
+  });
+}
+
+function sftpMkdir(sftp, remotePath) {
+  return new Promise((resolve, reject) => {
+    sftp.mkdir(remotePath, (error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+
+      resolve(true);
+    });
+  });
+}
+
+function writeRemoteFile(sftp, remotePath, buffer) {
+  return new Promise((resolve, reject) => {
+    const stream = sftp.createWriteStream(remotePath, {
+      flags: "w",
+      encoding: null,
+      mode: 0o644,
+    });
+
+    stream.on("error", reject);
+    stream.on("close", resolve);
+    stream.end(buffer);
+  });
+}
+
+function getDefaultRemoteRoot(payload) {
+  const sshUser = payload?.sshUser || process.env.SSH_USER || "arduino";
+  return `/home/${sshUser}`;
+}
+
+function normalizeRemotePath(remotePath, payload) {
+  const fallback = getDefaultRemoteRoot(payload);
+  const nextPath = String(remotePath || fallback).trim() || fallback;
+  const normalized = path.posix.normalize(nextPath);
+
+  if (!normalized || normalized === ".") {
+    return fallback;
+  }
+
+  return normalized.startsWith("/") ? normalized : path.posix.join(fallback, normalized);
+}
+
+async function ensureRemoteDirectoryExists(sftp, remotePath) {
+  const normalizedPath = path.posix.normalize(remotePath);
+
+  if (!normalizedPath || normalizedPath === "." || normalizedPath === "/") {
+    return "/";
+  }
+
+  const parentPath = path.posix.dirname(normalizedPath);
+
+  if (parentPath && parentPath !== normalizedPath) {
+    await ensureRemoteDirectoryExists(sftp, parentPath);
+  }
+
+  try {
+    const stats = await sftpStat(sftp, normalizedPath);
+
+    if (!stats?.isDirectory?.()) {
+      throw new Error(`${normalizedPath} exists but is not a directory.`);
+    }
+  } catch (error) {
+    const message = String(error?.message || "");
+    const code = error?.code;
+
+    if (code !== 2 && !message.toLowerCase().includes("no such file")) {
+      throw error;
+    }
+
+    await sftpMkdir(sftp, normalizedPath);
+  }
+
+  return normalizedPath;
+}
+
+async function withSftpSession(payload, callback) {
+  const client = await connectSshClient(payload);
+
+  try {
+    const sftp = await openSftpClient(client);
+    return await callback({ client, sftp });
+  } finally {
+    client.end();
+  }
+}
+
+async function listMissionRemoteDirectories(payload) {
+  const remotePath = normalizeRemotePath(payload?.remotePath, payload);
+
+  return withSftpSession(payload, async ({ sftp }) => {
+    const entries = await sftpReadDir(sftp, remotePath);
+    const directories = entries
+      .filter((entry) => entry?.attrs?.isDirectory?.())
+      .map((entry) => ({
+        name: entry.filename,
+        path: path.posix.join(remotePath, entry.filename),
+      }))
+      .sort((left, right) => left.name.localeCompare(right.name));
+    const files = entries
+      .filter((entry) => !entry?.attrs?.isDirectory?.())
+      .map((entry) => ({
+        name: entry.filename,
+        path: path.posix.join(remotePath, entry.filename),
+      }))
+      .filter((entry) => entry.name.toLowerCase().endsWith(".py"))
+      .sort((left, right) => left.name.localeCompare(right.name));
+
+    return {
+      remotePath,
+      parentPath: remotePath === "/" ? null : path.posix.dirname(remotePath),
+      directories,
+      files,
+    };
+  });
+}
+
+async function createMissionRemoteDirectory(payload) {
+  const parentPath = normalizeRemotePath(payload?.parentPath, payload);
+  const directoryName = String(payload?.directoryName || "").trim();
+
+  if (!directoryName) {
+    throw new Error("Directory name is required.");
+  }
+
+  if (directoryName.includes("/") || directoryName.includes("\\")) {
+    throw new Error("Directory name cannot contain path separators.");
+  }
+
+  const remotePath = path.posix.join(parentPath, directoryName);
+
+  return withSftpSession(payload, async ({ sftp }) => {
+    await ensureRemoteDirectoryExists(sftp, remotePath);
+
+    return {
+      created: true,
+      remotePath,
+    };
+  });
+}
+
+async function uploadMissionFiles(payload) {
+  const remotePath = normalizeRemotePath(payload?.remotePath, payload);
+  const files = Array.isArray(payload?.files) ? payload.files : [];
+
+  if (!files.length) {
+    return {
+      uploaded: [],
+      remotePath,
+    };
+  }
+
+  return withSftpSession(payload, async ({ sftp }) => {
+    await ensureRemoteDirectoryExists(sftp, remotePath);
+
+    const uploaded = [];
+
+    for (const file of files) {
+      const fileName = path.posix.basename(String(file?.name || "").trim());
+      const dataBase64 = String(file?.dataBase64 || "");
+
+      if (!fileName || !dataBase64) {
+        continue;
+      }
+
+      const destinationPath = path.posix.join(remotePath, fileName);
+      const buffer = Buffer.from(dataBase64, "base64");
+
+      await writeRemoteFile(sftp, destinationPath, buffer);
+      uploaded.push({
+        name: fileName,
+        path: destinationPath,
+        size: buffer.byteLength,
+      });
+    }
+
+    return {
+      uploaded,
+      remotePath,
+    };
+  });
 }
 
 function normalizeSshOpenError(error) {
@@ -2022,6 +2294,60 @@ ipcMain.handle("device:disconnect", async (_event, deviceId) => {
   }
 
   return disconnectDevice(deviceId);
+});
+
+ipcMain.handle("mission:list-remote-directories", async (_event, payload) => {
+  if (!payload?.address) {
+    throw new Error("This device does not expose an SSH address.");
+  }
+
+  try {
+    return await listMissionRemoteDirectories(payload);
+  } catch (error) {
+    if (error?.level === "client-authentication" && !payload?.password) {
+      return {
+        authRequired: true,
+      };
+    }
+
+    throw error;
+  }
+});
+
+ipcMain.handle("mission:create-remote-directory", async (_event, payload) => {
+  if (!payload?.address) {
+    throw new Error("This device does not expose an SSH address.");
+  }
+
+  try {
+    return await createMissionRemoteDirectory(payload);
+  } catch (error) {
+    if (error?.level === "client-authentication" && !payload?.password) {
+      return {
+        authRequired: true,
+      };
+    }
+
+    throw error;
+  }
+});
+
+ipcMain.handle("mission:upload-files", async (_event, payload) => {
+  if (!payload?.address) {
+    throw new Error("This device does not expose an SSH address.");
+  }
+
+  try {
+    return await uploadMissionFiles(payload);
+  } catch (error) {
+    if (error?.level === "client-authentication" && !payload?.password) {
+      return {
+        authRequired: true,
+      };
+    }
+
+    throw error;
+  }
 });
 
 async function loadApp() {

@@ -60,11 +60,11 @@ model AppSetting {
 }
 
 model SavedDevice {
-  id           String   @id @default(cuid())
-  sourceKey    String   @unique
+  id           String    @id @default(cuid())
+  sourceKey    String    @unique
   alias        String
   name         String
-  baudRate     Int      @default(115200)
+  baudRate     Int       @default(115200)
   transport    String
   type         String
   source       String
@@ -80,6 +80,23 @@ model SavedDevice {
   mac          String?
   interface    String?
   archivedAt   DateTime?
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  missions     Mission[]
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+}
+
+model Mission {
+  id         String      @id @default(cuid())
+  name       String
+  deviceId   String
+  remotePath String
+  entrypoint String
+  notes      String?
+  filesJson  String      @default("[]")
+  status     String      @default("draft")
+  device     SavedDevice @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
+
+  @@index([deviceId])
 }

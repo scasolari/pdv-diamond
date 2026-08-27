@@ -2,9 +2,9 @@ const fs = require("fs");
 const path = require("path");
 
 module.exports = {
-  appId: "com.placedv.ai",
-  productName: "Placedv AI",
-  artifactName: "Placedv-AI-${version}-${arch}.${ext}",
+  appId: "com.placedv.labs",
+  productName: "Placedv Labs",
+  artifactName: "Placedv-Labs-${version}-${arch}.${ext}",
   icon: "build/icon.icns",
   files: [
     "electron/**/*",

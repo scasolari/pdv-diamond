@@ -13,6 +13,9 @@ contextBridge.exposeInMainWorld("electron", {
   writeDeviceTerminal: (deviceId, data) => ipcRenderer.invoke("device:terminal-write", { deviceId, data }),
   resizeDeviceTerminal: (deviceId, size) => ipcRenderer.invoke("device:terminal-resize", { deviceId, ...size }),
   closeDeviceTerminal: (deviceId) => ipcRenderer.invoke("device:terminal-close", deviceId),
+  listMissionRemoteDirectories: (payload) => ipcRenderer.invoke("mission:list-remote-directories", payload),
+  createMissionRemoteDirectory: (payload) => ipcRenderer.invoke("mission:create-remote-directory", payload),
+  uploadMissionFiles: (payload) => ipcRenderer.invoke("mission:upload-files", payload),
   onDeviceConnectionStatus: (callback) => {
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on("device:connection-status", listener);
