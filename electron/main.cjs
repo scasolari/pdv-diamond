@@ -22,7 +22,7 @@ const devServerUrl = process.env.ELECTRON_URL || `http://${localAppHost}:${defau
 const appEntryUrl = `${devServerUrl.replace(/\/$/, "")}/app/dashboard`;
 const isDev = process.env.NODE_ENV === "development";
 const electronSessionPartition = "persist:placedv-desktop";
-const desktopAppName = "Placedv AI";
+const desktopAppName = "Placedv Labs";
 const updateCheckIntervalMs = 5 * 60 * 1000;
 const sshTerminalInactivityTimeoutMs = 5 * 60 * 1000;
 const serialConnectionLogLimit = 200;

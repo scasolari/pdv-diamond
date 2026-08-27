@@ -57,7 +57,7 @@ if (!fs.existsSync(envPath)) {
 }
 
 const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
-const appName = packageJson.productName || "Placedv AI";
+const appName = packageJson.productName || "Placedv Labs";
 const runtimeConfigDir = getUserDataDir(appName);
 const runtimeConfigPath = path.join(runtimeConfigDir, "runtime-config.json");
 const parsedEnv = parseEnvFile(fs.readFileSync(envPath, "utf8"));

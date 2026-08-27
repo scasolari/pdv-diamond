@@ -163,7 +163,7 @@ export default function General() {
                 <div className="flex flex-row justify-between items-center">
                     <div className="flex flex-col gap-1">
                         <h3 className="font-semibold text-xs">Theme</h3>
-                        <p className="font-semibold text-xs text-neutral-500">Choose how Placedv AI looks across the app.</p>
+                        <p className="font-semibold text-xs text-neutral-500">Choose how Placedv Labs looks across the app.</p>
                     </div>
                     <div>
                         <Select value={mounted ? theme : undefined} onValueChange={setTheme}>

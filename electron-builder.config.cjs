@@ -36,7 +36,7 @@ module.exports = {
     const projectDir = context.projectDir || context.packager?.projectDir;
     const appOutDir = context.appOutDir || context.outDir;
     const productFilename =
-      context.packager?.appInfo?.productFilename || context.packager?.appInfo?.productName || "Placedv AI";
+      context.packager?.appInfo?.productFilename || context.packager?.appInfo?.productName || "Placedv Labs";
 
     const appBundlePath = path.join(
       appOutDir,
