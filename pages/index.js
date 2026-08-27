@@ -1,5 +1,5 @@
 import { Button } from "@/components/ui/button";
-import { useSession } from "next-auth/react";
+import { signIn, useSession } from "next-auth/react";
 import { PiGithubLogoBold, PiMetaLogoBold } from "react-icons/pi";
 import { useRouter } from "next/router";
 import { useEffect, useState } from "react";
@@ -7,7 +7,6 @@ import { useEffect, useState } from "react";
 export default function Home() {
     const router = useRouter();
     const { status } = useSession();
-    const [csrfToken, setCsrfToken] = useState("");
     const [availableProviders, setAvailableProviders] = useState({});
     const authError = typeof router.query?.error === "string" ? router.query.error : null;
 
@@ -28,20 +27,14 @@ export default function Home() {
 
         async function loadAuthConfig() {
             try {
-                const [csrfResponse, providersResponse] = await Promise.all([
-                    fetch("/api/auth/csrf"),
-                    fetch("/api/auth/providers"),
-                ]);
-                const csrfPayload = await csrfResponse.json();
+                const providersResponse = await fetch("/api/auth/providers");
                 const providersPayload = await providersResponse.json();
 
                 if (!cancelled) {
-                    setCsrfToken(csrfPayload?.csrfToken || "");
                     setAvailableProviders(providersPayload || {});
                 }
             } catch (error) {
                 if (!cancelled) {
-                    setCsrfToken("");
                     setAvailableProviders({});
                 }
             }
@@ -68,24 +61,24 @@ export default function Home() {
             </div>
         ) : null}
         {hasFacebookProvider ? (
-            <form method="post" action="/api/auth/signin/facebook" className="w-fit">
-                <input type="hidden" name="csrfToken" value={csrfToken || ""} />
-                <input type="hidden" name="callbackUrl" value="/app/dashboard" />
-                <Button type="submit" className="w-fit flex flex-row gap-2 bg-blue-600 shadow-none hover:bg-blue-700">
-                    <PiMetaLogoBold/>
-                    Login with Meta
-                </Button>
-            </form>
+            <Button
+                type="button"
+                onClick={() => signIn("facebook", { callbackUrl: "/app/dashboard" })}
+                className="w-fit flex flex-row gap-2 bg-blue-600 shadow-none hover:bg-blue-700"
+            >
+                <PiMetaLogoBold/>
+                Login with Meta
+            </Button>
         ) : null}
         {hasGithubProvider ? (
-            <form method="post" action="/api/auth/signin/github" className="w-fit">
-                <input type="hidden" name="csrfToken" value={csrfToken || ""} />
-                <input type="hidden" name="callbackUrl" value="/app/dashboard" />
-                <Button type="submit" className="w-fit flex flex-row gap-2 bg-neutral-800 shadow-none hover:bg-neutral-950">
-                    <PiGithubLogoBold/>
-                    Login with GitHub
-                </Button>
-            </form>
+            <Button
+                type="button"
+                onClick={() => signIn("github", { callbackUrl: "/app/dashboard" })}
+                className="w-fit flex flex-row gap-2 bg-neutral-800 shadow-none hover:bg-neutral-950"
+            >
+                <PiGithubLogoBold/>
+                Login with GitHub
+            </Button>
         ) : null}
     </div>
 }
