@@ -35,6 +35,7 @@ import {Input} from "@/components/ui/input";
 
 const DEVICE_STATUS_REFRESH_INTERVAL_MS = 3000;
 const DEVICE_STATUS_MISS_THRESHOLD = 3;
+const DEVICE_PALETTE_REFRESH_INTERVAL_MS = 2500;
 const PENDING_UNAVAILABLE_DEVICE_KEY = "pending_unavailable_device";
 let savedDeviceStatusCache = {};
 let savedDeviceAvailabilityCache = {};
@@ -220,6 +221,8 @@ function buildSavedDevicesStatusSignature(savedDevices) {
             device.sourceKey,
             device.path,
             device.address,
+            device.sshUser,
+            device.sshPort,
             device.serialNumber,
             device.pnpId,
             device.mac,
@@ -230,6 +233,53 @@ function buildSavedDevicesStatusSignature(savedDevices) {
         ].join("|"))
         .sort()
         .join("::");
+}
+
+function mergeDetectedAndSavedNetworkDevices(detectedDevices, savedDevices) {
+    const nextDetectedDevices = Array.isArray(detectedDevices) ? detectedDevices : [];
+    const nextSavedDevices = Array.isArray(savedDevices) ? savedDevices : [];
+    const mergedDevices = [...nextDetectedDevices];
+    const seenKeys = new Set(
+        mergedDevices.flatMap((device) => [
+            device?.id,
+            device?.sourceKey,
+            device?.address ? `address:${normalizeMatchValue(device.address)}` : null,
+        ].filter(Boolean))
+    );
+
+    nextSavedDevices
+        .filter((device) => !device?.archivedAt)
+        .filter((device) => device?.transport === "network" || device?.type === "network" || device?.address)
+        .forEach((device) => {
+            const candidateKeys = [
+                device?.id,
+                device?.sourceKey,
+                device?.address ? `address:${normalizeMatchValue(device.address)}` : null,
+            ].filter(Boolean);
+
+            if (candidateKeys.some((key) => seenKeys.has(key))) {
+                return;
+            }
+
+            mergedDevices.push({
+                id: device.id || device.sourceKey || `saved-network:${device.address || device.alias || device.name}`,
+                name: device.alias || device.name || device.address || "Network device",
+                address: device.address || null,
+                port: device.port || null,
+                protocol: device.protocol || "ssh",
+                transport: "network",
+                type: "network",
+                source: device.source || "saved",
+                sourceKey: device.sourceKey || null,
+                mac: device.mac || null,
+                interface: device.interface || null,
+                savedDeviceId: device.id || null,
+            });
+
+            candidateKeys.forEach((key) => seenKeys.add(key));
+        });
+
+    return mergedDevices.sort((left, right) => String(left?.name || "").localeCompare(String(right?.name || "")));
 }
 
 function flattenDetectedDevices(result) {
@@ -268,6 +318,8 @@ function NavigationBar(props) {
     const [selectedDevice, setSelectedDevice] = useState(null)
     const [isDeviceDetailsOpen, setIsDeviceDetailsOpen] = useState(false)
     const [deviceAlias, setDeviceAlias] = useState("")
+    const [deviceSshUser, setDeviceSshUser] = useState("arduino")
+    const [deviceSshPort, setDeviceSshPort] = useState("22")
     const [deviceToRename, setDeviceToRename] = useState(null)
     const [renameDeviceValue, setRenameDeviceValue] = useState("")
     const [deviceToArchive, setDeviceToArchive] = useState(null)
@@ -360,6 +412,8 @@ function NavigationBar(props) {
             sourceKey: device.sourceKey,
             path: device.path,
             address: device.address,
+            sshUser: device.sshUser,
+            sshPort: device.sshPort,
             serialNumber: device.serialNumber,
             pnpId: device.pnpId,
             mac: device.mac,
@@ -476,7 +530,10 @@ function NavigationBar(props) {
         resetMissionDialogState();
     }
 
-    async function persistDetectedDevice(device, aliasOverride) {
+    async function persistDetectedDevice(device, aliasOverride, sshOptions = {}) {
+        const nextSshUser = String(sshOptions.sshUser ?? deviceSshUser ?? "").trim();
+        const nextSshPort = Number(sshOptions.sshPort ?? deviceSshPort);
+
         const response = await fetch("/api/devices", {
             method: "POST",
             headers: {
@@ -492,6 +549,8 @@ function NavigationBar(props) {
                 path: device.path ?? null,
                 address: device.address ?? null,
                 port: device.port ?? null,
+                sshUser: nextSshUser || null,
+                sshPort: Number.isInteger(nextSshPort) && nextSshPort > 0 ? nextSshPort : null,
                 protocol: device.protocol ?? null,
                 manufacturer: device.manufacturer ?? null,
                 serialNumber: device.serialNumber ?? null,
@@ -784,6 +843,8 @@ function NavigationBar(props) {
     function handleDetectedDeviceSelect(device) {
         setSelectedDevice(device);
         setDeviceAlias(device?.name || "");
+        setDeviceSshUser(device?.sshUser || (device?.transport === "network" ? "arduino" : ""));
+        setDeviceSshPort(String(device?.sshPort || device?.port || 22));
         setOpen(false);
         setIsDeviceDetailsOpen(true);
     }
@@ -800,7 +861,10 @@ function NavigationBar(props) {
         }
 
         try {
-            const savedDevice = await persistDetectedDevice(detectedDevice, detectedDevice.name);
+            const savedDevice = await persistDetectedDevice(detectedDevice, detectedDevice.name, {
+                sshUser: detectedDevice.sshUser || (detectedDevice.transport === "network" ? "arduino" : ""),
+                sshPort: detectedDevice.sshPort ?? detectedDevice.port ?? 22,
+            });
             setMissionSelectedDeviceId(savedDevice.id);
             setMissionSelectedDetectedDeviceId("");
             setMissionSubmitError("");
@@ -1005,11 +1069,16 @@ function NavigationBar(props) {
         }
 
         try {
-            const savedDevice = await persistDetectedDevice(selectedDevice, deviceAlias.trim() || selectedDevice.name);
+            const savedDevice = await persistDetectedDevice(selectedDevice, deviceAlias.trim() || selectedDevice.name, {
+                sshUser: deviceSshUser,
+                sshPort: deviceSshPort,
+            });
             addSavedDevice(savedDevice);
             setIsDeviceDetailsOpen(false);
             setSelectedDevice(null);
             setDeviceAlias("");
+            setDeviceSshUser("arduino");
+            setDeviceSshPort("22");
         } catch (error) {
             return;
         }
@@ -1306,6 +1375,7 @@ function NavigationBar(props) {
         }
 
         let cancelled = false;
+        let intervalId;
 
         async function loadDevices() {
             setDevicesState((currentState) => ({
@@ -1328,10 +1398,10 @@ function NavigationBar(props) {
                     groups: {
                         usb: result?.groups?.usb || [],
                         bluetooth: result?.groups?.bluetooth || [],
-                        network: result?.groups?.network || [],
+                        network: mergeDetectedAndSavedNetworkDevices(result?.groups?.network || [], ui?.savedDevices || []),
                     },
                     network: {
-                        neighbors: result?.network?.neighbors || [],
+                        neighbors: mergeDetectedAndSavedNetworkDevices(result?.network?.neighbors || [], ui?.savedDevices || []),
                     },
                 });
             } catch (error) {
@@ -1347,12 +1417,16 @@ function NavigationBar(props) {
             }
         }
 
-        loadDevices();
+        void loadDevices();
+        intervalId = window.setInterval(() => {
+            void loadDevices();
+        }, DEVICE_PALETTE_REFRESH_INTERVAL_MS);
 
         return () => {
             cancelled = true;
+            window.clearInterval(intervalId);
         };
-    }, [isDevicePalette, open]);
+    }, [isDevicePalette, open, ui?.savedDevices]);
 
     if(!session) return null;
 
@@ -1717,15 +1791,46 @@ function NavigationBar(props) {
                                     id="device-alias"
                                     value={deviceAlias}
                                     onChange={(event) => setDeviceAlias(event.target.value)}
-                                    className="h-7 p-0 rounded-lg border border-neutral-200 bg-white px-3 text-xs font-semibold outline-none dark:border-neutral-800 dark:bg-neutral-900"
+                                    className="h-7 p-0 rounded-lg border-0 border-neutral-200 ring-1 ring-neutral-200 dark:ring-neutral-700 bg-white dark:bg-neutral-800 px-3 text-xs font-semibold outline-none dark:border-neutral-800 focus-visible:ring-blue-500 dark:focus-visible:ring-blue-500"
                                     placeholder="Arduino banco test"
                                 />
+                            </div>
+                            <div className="grid gap-3 md:grid-cols-2">
+                                <div className="grid gap-2">
+                                    <label htmlFor="device-ssh-user" className="text-neutral-500">SSH user</label>
+                                    <Input
+                                        id="device-ssh-user"
+                                        value={deviceSshUser}
+                                        onChange={(event) => setDeviceSshUser(event.target.value)}
+                                        className="h-7 p-0 rounded-lg border-0 border-neutral-200 ring-1 ring-neutral-200 dark:ring-neutral-700 bg-white dark:bg-neutral-800 px-3 text-xs font-semibold outline-none dark:border-neutral-800 focus-visible:ring-blue-500 dark:focus-visible:ring-blue-500"
+                                        placeholder="arduino"
+                                    />
+                                </div>
+                                <div className="grid gap-2">
+                                    <label htmlFor="device-ssh-port" className="text-neutral-500">SSH port</label>
+                                    <Input
+                                        id="device-ssh-port"
+                                        type="number"
+                                        min="1"
+                                        step="1"
+                                        value={deviceSshPort}
+                                        onChange={(event) => setDeviceSshPort(event.target.value)}
+                                        className="h-7 p-0 rounded-lg border-0 border-neutral-200 ring-1 ring-neutral-200 dark:ring-neutral-700 bg-white dark:bg-neutral-800 px-3 text-xs font-semibold outline-none dark:border-neutral-800 focus-visible:ring-blue-500 dark:focus-visible:ring-blue-500"
+                                        placeholder="22"
+                                    />
+                                </div>
                             </div>
                         </div>
                     ) : null}
                     <DialogFooter>
                         <Button
-                            onClick={() => setIsDeviceDetailsOpen(!isDeviceDetailsOpen)}
+                            onClick={() => {
+                                setIsDeviceDetailsOpen(false);
+                                setSelectedDevice(null);
+                                setDeviceAlias("");
+                                setDeviceSshUser("arduino");
+                                setDeviceSshPort("22");
+                            }}
                             className="rounded-lg h-7 !font-semibold !text-xs border bg-white hover:bg-neutral-50 text-black dark:text-white dark:bg-neutral-800 dark:border-neutral-700"
                         >
                             Cancel
@@ -1733,7 +1838,7 @@ function NavigationBar(props) {
                         <Button
                             onClick={handleAddDevice}
                             type="button"
-                            className="rounded-lg h-7 !font-semibold !text-xs border bg-blue-600 hover:bg-blue-700 border-blue-800 text-white dark:text-white dark:bg-neutral-800 dark:border-neutral-700"
+                            className="rounded-lg h-7 !font-semibold !text-xs border border-blue-700 bg-blue-600 hover:bg-blue-700 text-white"
                         >
                             Add device
                         </Button>

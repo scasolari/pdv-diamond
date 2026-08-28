@@ -57,6 +57,22 @@ export default async function handler(req, res) {
             data.baudRate = nextBaudRate;
         }
 
+        if (payload.sshUser !== undefined) {
+            data.sshUser = payload.sshUser ? String(payload.sshUser).trim() : null;
+        }
+
+        if (payload.sshPort !== undefined) {
+            const nextSshPort = Number(payload.sshPort);
+
+            if (payload.sshPort === null || payload.sshPort === "") {
+                data.sshPort = null;
+            } else if (!Number.isInteger(nextSshPort) || nextSshPort <= 0) {
+                return res.status(400).json({ message: "Invalid SSH port." });
+            } else {
+                data.sshPort = nextSshPort;
+            }
+        }
+
         try {
             const device = await db.savedDevice.update({
                 where: {

@@ -13,8 +13,12 @@ const { promisify } = require("util");
 
 const execFileAsync = promisify(execFile);
 const sshDiscoveryPort = 22;
-const sshDiscoveryTimeoutMs = 180;
-const sshDiscoveryConcurrency = 48;
+const sshDiscoveryTimeoutMs = 650;
+const sshDiscoveryConcurrency = 16;
+const deviceListCacheTtlMs = 2500;
+const knownNetworkDeviceTtlMs = 10 * 60 * 1000;
+const subnetDiscoveryCacheTtlMs = 45 * 1000;
+const lanDiscoveryCacheTtlMs = 45 * 1000;
 
 const defaultPort = Number(process.env.PORT || 3000);
 const localAppHost = "127.0.0.1";
@@ -30,6 +34,7 @@ const serialConnectionLogLimit = 200;
 const deviceTerminalSessions = new Map();
 const runtimeConfigFilename = "runtime-config.json";
 const sshKnownHostsFilename = "ssh-known-hosts.json";
+const sshTerminalLogFilename = "ssh-terminal.log";
 const requiredProductionEnvKeys = [
   "NEXTAUTH_SECRET",
 ];
@@ -49,6 +54,26 @@ let isQuitting = false;
 let updateCheckInterval;
 let isUpdateCheckInProgress = false;
 const deviceConnections = new Map();
+let deviceListCache = {
+  expiresAt: 0,
+  result: null,
+};
+let deviceListInFlightPromise = null;
+const recentNetworkDevices = new Map();
+let subnetDiscoveryCache = {
+  expiresAt: 0,
+  devices: [],
+};
+let subnetDiscoveryInFlightPromise = null;
+let arpNeighborCache = {
+  expiresAt: 0,
+  devices: [],
+};
+let lanDiscoveryCache = {
+  expiresAt: 0,
+  devices: [],
+};
+let lanDiscoveryInFlightPromise = null;
 let updateStatus = {
   state: "idle",
   label: "Check for updates",
@@ -112,6 +137,7 @@ function resolveSystemBinary(commandName) {
   if (process.platform === "darwin") {
     const darwinPaths = {
       arp: ["/usr/sbin/arp", "/sbin/arp"],
+      ping: ["/sbin/ping", "/usr/sbin/ping"],
       system_profiler: ["/usr/sbin/system_profiler"],
     };
 
@@ -127,6 +153,7 @@ function resolveSystemBinary(commandName) {
   if (process.platform === "win32") {
     const winPaths = {
       arp: ["C:\\Windows\\System32\\arp.exe"],
+      ping: ["C:\\Windows\\System32\\ping.exe"],
     };
 
     const candidates = winPaths[commandName] || [];
@@ -181,6 +208,36 @@ function getRuntimeConfigPath() {
 
 function getKnownHostsPath() {
   return path.join(app.getPath("userData"), sshKnownHostsFilename);
+}
+
+function getNetworkDiscoveryLogPath() {
+  return path.join(app.getPath("userData"), "network-discovery.log");
+}
+
+function getSshTerminalLogPath() {
+  return path.join(app.getPath("userData"), sshTerminalLogFilename);
+}
+
+function appendNetworkDiscoveryLog(entry) {
+  try {
+    const logPath = getNetworkDiscoveryLogPath();
+    const line = `[${new Date().toISOString()}] ${entry}\n`;
+    fs.mkdirSync(path.dirname(logPath), { recursive: true });
+    fs.appendFileSync(logPath, line, "utf8");
+  } catch (error) {
+    console.error("Failed to write network discovery log:", error);
+  }
+}
+
+function appendSshTerminalLog(entry) {
+  try {
+    const logPath = getSshTerminalLogPath();
+    const line = `[${new Date().toISOString()}] ${entry}\n`;
+    fs.mkdirSync(path.dirname(logPath), { recursive: true });
+    fs.appendFileSync(logPath, line, "utf8");
+  } catch (error) {
+    console.error("Failed to write SSH terminal log:", error);
+  }
 }
 
 function loadKnownHosts() {
@@ -356,7 +413,7 @@ async function bootstrapLocalDatabaseWithSqlite(databasePath) {
     "CREATE UNIQUE INDEX IF NOT EXISTS `VerificationToken_token_key` ON `VerificationToken`(`token`);",
     "CREATE UNIQUE INDEX IF NOT EXISTS `VerificationToken_identifier_token_key` ON `VerificationToken`(`identifier`, `token`);",
     "CREATE TABLE IF NOT EXISTS `AppSetting` (`key` TEXT NOT NULL PRIMARY KEY, `value` TEXT NOT NULL, `updatedAt` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP);",
-    "CREATE TABLE IF NOT EXISTS `SavedDevice` (`id` TEXT NOT NULL PRIMARY KEY, `sourceKey` TEXT NOT NULL, `alias` TEXT NOT NULL, `name` TEXT NOT NULL, `baudRate` INTEGER NOT NULL DEFAULT 115200, `transport` TEXT NOT NULL, `type` TEXT NOT NULL, `source` TEXT NOT NULL, `path` TEXT, `address` TEXT, `port` INTEGER, `protocol` TEXT, `manufacturer` TEXT, `serialNumber` TEXT, `vendorId` TEXT, `productId` TEXT, `pnpId` TEXT, `mac` TEXT, `interface` TEXT, `archivedAt` DATETIME, `createdAt` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, `updatedAt` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP);",
+    "CREATE TABLE IF NOT EXISTS `SavedDevice` (`id` TEXT NOT NULL PRIMARY KEY, `sourceKey` TEXT NOT NULL, `alias` TEXT NOT NULL, `name` TEXT NOT NULL, `baudRate` INTEGER NOT NULL DEFAULT 115200, `transport` TEXT NOT NULL, `type` TEXT NOT NULL, `source` TEXT NOT NULL, `path` TEXT, `address` TEXT, `port` INTEGER, `sshUser` TEXT, `sshPort` INTEGER, `protocol` TEXT, `manufacturer` TEXT, `serialNumber` TEXT, `vendorId` TEXT, `productId` TEXT, `pnpId` TEXT, `mac` TEXT, `interface` TEXT, `archivedAt` DATETIME, `createdAt` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, `updatedAt` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP);",
     "CREATE UNIQUE INDEX IF NOT EXISTS `SavedDevice_sourceKey_key` ON `SavedDevice`(`sourceKey`);",
     "CREATE TABLE IF NOT EXISTS `Mission` (`id` TEXT NOT NULL PRIMARY KEY, `name` TEXT NOT NULL, `deviceId` TEXT NOT NULL, `remotePath` TEXT NOT NULL, `entrypoint` TEXT NOT NULL, `notes` TEXT, `filesJson` TEXT NOT NULL DEFAULT '[]', `status` TEXT NOT NULL DEFAULT 'draft', `createdAt` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, `updatedAt` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, CONSTRAINT `Mission_deviceId_fkey` FOREIGN KEY (`deviceId`) REFERENCES `SavedDevice` (`id`) ON DELETE CASCADE ON UPDATE CASCADE);",
     "CREATE INDEX IF NOT EXISTS `Mission_deviceId_idx` ON `Mission`(`deviceId`);",
@@ -364,6 +421,8 @@ async function bootstrapLocalDatabaseWithSqlite(databasePath) {
   const migrationStatements = [
     "ALTER TABLE `SavedDevice` ADD COLUMN `mac` TEXT;",
     "ALTER TABLE `SavedDevice` ADD COLUMN `interface` TEXT;",
+    "ALTER TABLE `SavedDevice` ADD COLUMN `sshUser` TEXT;",
+    "ALTER TABLE `SavedDevice` ADD COLUMN `sshPort` INTEGER;",
   ];
   let database;
 
@@ -406,6 +465,168 @@ async function ensureLocalDatabaseSchema() {
     const bootstrapMessage = error?.message || "Unknown SQLite bootstrap error.";
     throw new Error(`Unable to initialize the local SQLite database.\n${String(bootstrapMessage).trim()}`);
   }
+}
+
+function listSavedNetworkDevicesFromLocalDb() {
+  const databasePath = getLocalDatabasePath();
+
+  if (!fs.existsSync(databasePath)) {
+    return [];
+  }
+
+  let database;
+
+  try {
+    database = new DatabaseSync(databasePath);
+    const statement = database.prepare(
+      "SELECT id, alias, name, address, port, sshUser, sshPort, protocol FROM `SavedDevice` WHERE archivedAt IS NULL AND address IS NOT NULL AND address != ''"
+    );
+
+    return statement.all().map((row) => ({
+      id: row.id,
+      name: row.alias || row.name || row.address,
+      address: row.address,
+      port: Number(row.port) || sshDiscoveryPort,
+      sshUser: row.sshUser || null,
+      sshPort: Number(row.sshPort) || sshDiscoveryPort,
+      protocol: row.protocol || "ssh",
+      transport: "network",
+      type: "network",
+      source: "saved",
+      savedDeviceId: row.id,
+    }));
+  } catch (error) {
+    appendNetworkDiscoveryLog(`saved-network-read-error=${error?.message || String(error)}`);
+    return [];
+  } finally {
+    try {
+      database?.close();
+    } catch (error) {
+      console.error(`Failed to close local database while reading saved network devices:`, error);
+    }
+  }
+}
+
+function getSavedNetworkDeviceFromLocalDb(deviceId) {
+  const databasePath = getLocalDatabasePath();
+
+  if (!deviceId || !fs.existsSync(databasePath)) {
+    return null;
+  }
+
+  let database;
+
+  try {
+    database = new DatabaseSync(databasePath);
+    const statement = database.prepare(
+      "SELECT id, alias, name, address, port, sshUser, sshPort, protocol FROM `SavedDevice` WHERE id = ? AND archivedAt IS NULL LIMIT 1"
+    );
+    const row = statement.get(deviceId);
+
+    if (!row) {
+      return null;
+    }
+
+    return {
+      id: row.id,
+      alias: row.alias || row.name || row.address,
+      name: row.name || row.alias || row.address,
+      address: row.address,
+      port: Number(row.port) || sshDiscoveryPort,
+      sshUser: row.sshUser || null,
+      sshPort: Number(row.sshPort) || sshDiscoveryPort,
+      protocol: row.protocol || "ssh",
+    };
+  } catch (error) {
+    appendNetworkDiscoveryLog(`saved-network-read-error=${error?.message || String(error)}`);
+    return null;
+  } finally {
+    try {
+      database?.close();
+    } catch (error) {
+      console.error(`Failed to close local database while reading saved network device ${deviceId}:`, error);
+    }
+  }
+}
+
+function listRecentNetworkDevices() {
+  const now = Date.now();
+  const devices = [];
+
+  for (const [address, entry] of recentNetworkDevices.entries()) {
+    if (!entry || !entry.lastSeenAt || now - entry.lastSeenAt > knownNetworkDeviceTtlMs) {
+      recentNetworkDevices.delete(address);
+      continue;
+    }
+
+    devices.push(entry.device);
+  }
+
+  return devices;
+}
+
+function rememberRecentNetworkDevices(devices) {
+  const now = Date.now();
+
+  for (const device of devices || []) {
+    if (!device?.address) {
+      continue;
+    }
+
+    recentNetworkDevices.set(device.address, {
+      device,
+      lastSeenAt: now,
+    });
+  }
+}
+
+function buildUniqueNetworkTargets(primaryDevices, secondaryAddresses = []) {
+  const seenAddresses = new Set();
+  const targets = [];
+
+  for (const device of primaryDevices || []) {
+    const normalizedAddress = String(device?.address || "").trim();
+
+    if (!normalizedAddress || seenAddresses.has(normalizedAddress)) {
+      continue;
+    }
+
+    seenAddresses.add(normalizedAddress);
+    targets.push({
+      id: device.id || `network-ssh:${normalizedAddress}`,
+      name: device.name || normalizedAddress,
+      address: normalizedAddress,
+      port: Number(device.sshPort ?? device.port) || sshDiscoveryPort,
+      protocol: device.protocol || "ssh",
+      transport: "network",
+      type: "network",
+      source: device.source || "network",
+      savedDeviceId: device.savedDeviceId || null,
+    });
+  }
+
+  for (const address of secondaryAddresses || []) {
+    const normalizedAddress = String(address || "").trim();
+
+    if (!normalizedAddress || seenAddresses.has(normalizedAddress)) {
+      continue;
+    }
+
+    seenAddresses.add(normalizedAddress);
+    targets.push({
+      id: `network-ssh:${normalizedAddress}`,
+      name: normalizedAddress,
+      address: normalizedAddress,
+      port: sshDiscoveryPort,
+      protocol: "ssh",
+      transport: "network",
+      type: "network",
+      source: "network",
+      savedDeviceId: null,
+    });
+  }
+
+  return targets;
 }
 
 function getUpdateErrorStatus(error) {
@@ -807,11 +1028,28 @@ async function connectSerialDevice(payload) {
   return getDeviceConnectionSnapshot(deviceId);
 }
 
+function resolveSshKeyPath(payload) {
+  const candidate = payload?.sshKeyPath || process.env.SSH_KEY_PATH;
+
+  if (typeof candidate !== "string") {
+    return null;
+  }
+
+  const trimmed = candidate.trim();
+
+  if (!trimmed || !fs.existsSync(trimmed)) {
+    return null;
+  }
+
+  return trimmed;
+}
+
 function buildSshSpawnCommand(payload) {
-  const address = payload?.address;
-  const port = Number(payload?.port) || 22;
-  const sshUser = payload?.sshUser || process.env.SSH_USER || "arduino";
-  const sshKeyPath = payload?.sshKeyPath || process.env.SSH_KEY_PATH;
+  const savedDevice = payload?.id ? getSavedNetworkDeviceFromLocalDb(payload.id) : null;
+  const address = payload?.address || savedDevice?.address;
+  const port = Number(payload?.port ?? savedDevice?.sshPort ?? savedDevice?.port) || 22;
+  const sshUser = payload?.sshUser || savedDevice?.sshUser || process.env.SSH_USER || "arduino";
+  const sshKeyPath = resolveSshKeyPath(payload);
 
   if (!address) {
     throw new Error("Missing network device address.");
@@ -820,6 +1058,41 @@ function buildSshSpawnCommand(payload) {
   const args = [
     "-o",
     "BatchMode=yes",
+    "-o",
+    "StrictHostKeyChecking=accept-new",
+    "-o",
+    "ConnectTimeout=5",
+    "-p",
+    String(port),
+  ];
+
+  if (sshKeyPath) {
+    args.push("-i", sshKeyPath);
+  }
+
+  args.push(`${sshUser}@${address}`);
+
+  return {
+    command: "ssh",
+    args,
+    sshUser,
+    sshKeyPath: sshKeyPath || null,
+  };
+}
+
+function buildInteractiveSshSpawnCommand(payload) {
+  const savedDevice = payload?.id ? getSavedNetworkDeviceFromLocalDb(payload.id) : null;
+  const address = payload?.address || savedDevice?.address;
+  const port = Number(payload?.port ?? savedDevice?.sshPort ?? savedDevice?.port) || 22;
+  const sshUser = payload?.sshUser || savedDevice?.sshUser || process.env.SSH_USER || "arduino";
+  const sshKeyPath = resolveSshKeyPath(payload);
+
+  if (!address) {
+    throw new Error("Missing network device address.");
+  }
+
+  const args = [
+    "-tt",
     "-o",
     "StrictHostKeyChecking=accept-new",
     "-o",
@@ -975,7 +1248,11 @@ async function closeDeviceTerminal(deviceId) {
   if (session) {
     clearDeviceTerminalInactivityTimer(session);
     session.stream?.end?.();
-    session.client?.end?.();
+    if (typeof session.process?.end === "function") {
+      session.process.end();
+    } else {
+      session.process?.kill?.("SIGTERM");
+    }
     deviceTerminalSessions.delete(deviceId);
     return true;
   }
@@ -1027,7 +1304,7 @@ function resizeDeviceTerminal(deviceId, cols, rows) {
 }
 
 function getSshConnectionConfig(payload) {
-  const sshKeyPath = payload?.sshKeyPath || process.env.SSH_KEY_PATH;
+  const sshKeyPath = resolveSshKeyPath(payload);
   const sshKey =
     sshKeyPath && fs.existsSync(sshKeyPath)
       ? fs.readFileSync(sshKeyPath, "utf8")
@@ -1375,6 +1652,27 @@ function normalizeSshOpenError(error) {
   };
 }
 
+function isSshAuthenticationError(error) {
+  const message = String(error?.message || error || "").toLowerCase();
+
+  return (
+    error?.level === "client-authentication" ||
+    message.includes("all configured authentication methods failed") ||
+    message.includes("permission denied") ||
+    message.includes("unable to authenticate")
+  );
+}
+
+function isSshHostVerificationError(error) {
+  const message = String(error?.message || error || "").toLowerCase();
+
+  return (
+    message.includes("host denied") ||
+    message.includes("verification failed") ||
+    message.includes("host key verification failed")
+  );
+}
+
 async function openSerialDeviceTerminal(payload) {
   const deviceId = payload?.id;
   const devicePath = payload?.path;
@@ -1404,15 +1702,20 @@ async function openSerialDeviceTerminal(payload) {
 
 async function openSshDeviceTerminal(payload) {
   const deviceId = payload?.id;
-  const address = payload?.address;
-  const port = Number(payload?.port) || 22;
-  const sshUser = payload?.sshUser || process.env.SSH_USER || "arduino";
+  const savedDevice = deviceId ? getSavedNetworkDeviceFromLocalDb(deviceId) : null;
+  const address = payload?.address || savedDevice?.address;
+  const port = Number(payload?.port ?? savedDevice?.sshPort ?? savedDevice?.port) || 22;
+  const sshUser = payload?.sshUser || savedDevice?.sshUser || process.env.SSH_USER || "arduino";
   const cols = Math.max(20, Number(payload?.cols) || 120);
   const rows = Math.max(8, Number(payload?.rows) || 24);
 
   if (!deviceId || !address) {
     throw new Error("Missing SSH device configuration.");
   }
+
+  appendSshTerminalLog(
+    `open-request deviceId=${deviceId} address=${address} port=${port} sshUser=${sshUser} password=${payload?.password ? "yes" : "no"}`
+  );
 
   const existingSession = getDeviceTerminalSession(deviceId);
 
@@ -1436,110 +1739,165 @@ async function openSshDeviceTerminal(payload) {
   }
 
   return new Promise((resolve, reject) => {
-    const client = new SshClient();
     let settled = false;
+    let closed = false;
 
-    const fail = (error) => {
+    const finishReject = (error) => {
       if (settled) {
         return;
       }
 
       settled = true;
-      client.end();
+      appendSshTerminalLog(
+        `open-error deviceId=${deviceId} address=${address} port=${port} sshUser=${sshUser} level=${error?.level || ""} code=${error?.code || ""} message=${error?.message || String(error)}`
+      );
+      setDeviceConnectionState(deviceId, {
+        state: "error",
+        process: null,
+        lastError: error?.message || String(error),
+      });
       reject(error);
     };
 
-    client.on("ready", () => {
-      client.shell(
-        {
-          term: "xterm-256color",
-          cols,
-          rows,
-        },
-        (error, stream) => {
-          if (error) {
-            fail(error);
-            return;
-          }
+    connectSshClient({
+      ...payload,
+      id: deviceId,
+      address,
+      port,
+      sshUser,
+    })
+      .then((client) => {
+        if (settled) {
+          client.end();
+          return;
+        }
 
-          const sessionRecord = {
-            deviceId,
-            address,
-            port,
-            sshUser,
-            transport: "network",
-            client,
-            stream,
+        client.shell(
+          {
+            term: "xterm-256color",
             cols,
             rows,
-            inactivityTimer: null,
-            lastActivityAt: Date.now(),
-          };
-
-          deviceTerminalSessions.set(deviceId, sessionRecord);
-          refreshDeviceTerminalInactivityTimer(deviceId);
-
-          stream.on("data", (data) => {
-            if (!mainWindow || mainWindow.isDestroyed()) {
+          },
+          (error, channel) => {
+            if (error || !channel) {
+              client.end();
+              finishReject(error || new Error("Unable to open SSH shell."));
               return;
             }
 
-            refreshDeviceTerminalInactivityTimer(deviceId);
-            broadcastDeviceTerminalData(deviceId, Buffer.from(data).toString("utf8"));
-          });
+            const sessionRecord = {
+              deviceId,
+              address,
+              port,
+              sshUser,
+              transport: "network",
+              process: client,
+              stream: channel,
+              cols,
+              rows,
+              inactivityTimer: null,
+              lastActivityAt: Date.now(),
+            };
 
-          stream.on("close", () => {
-            clearDeviceTerminalInactivityTimer(sessionRecord);
-            deviceTerminalSessions.delete(deviceId);
-            broadcastDeviceTerminalExit(deviceId, 0, null);
-          });
+            setDeviceConnectionState(deviceId, {
+              state: "connecting",
+              process: client,
+              address,
+              port,
+              protocol: "ssh",
+              transport: "network",
+              lastError: null,
+              logs: getDeviceConnectionRecord(deviceId)?.logs || [],
+            });
 
-          stream.stderr?.on?.("data", (data) => {
-            if (!mainWindow || mainWindow.isDestroyed()) {
-              return;
-            }
+            deviceTerminalSessions.set(deviceId, sessionRecord);
 
-            refreshDeviceTerminalInactivityTimer(deviceId);
-            broadcastDeviceTerminalData(deviceId, Buffer.from(data).toString("utf8"));
-          });
+            const forwardOutput = (chunk) => {
+              const nextMessage = Buffer.from(chunk).toString("utf8");
 
-          client.on("close", () => {
-            clearDeviceTerminalInactivityTimer(sessionRecord);
-            deviceTerminalSessions.delete(deviceId);
-          });
+              if (nextMessage) {
+                refreshDeviceTerminalInactivityTimer(deviceId);
+                broadcastDeviceTerminalData(deviceId, nextMessage);
+              }
+            };
 
-          settled = true;
-          resolve({
-            deviceId,
-            address,
-            port,
-            sshUser,
-            reused: false,
-          });
-        }
-      );
-    });
+            channel.on("data", forwardOutput);
+            channel.stderr?.on?.("data", forwardOutput);
 
-    client.on("error", (error) => {
-      fail(error);
-    });
+            const finishOpen = () => {
+              if (settled) {
+                return;
+              }
 
-    client.on("keyboard-interactive", (_name, _instructions, _lang, prompts, finish) => {
-      const passwordPrompt = prompts?.find((prompt) =>
-        String(prompt?.prompt || "")
-          .toLowerCase()
-          .includes("password")
-      );
+              settled = true;
+              refreshDeviceTerminalInactivityTimer(deviceId);
+              setDeviceConnectionState(deviceId, {
+                state: "connected",
+                lastError: null,
+              });
+              appendSshTerminalLog(
+                `open-ready deviceId=${deviceId} address=${address} port=${port} sshUser=${sshUser}`
+              );
+              resolve({
+                deviceId,
+                address,
+                port,
+                sshUser,
+                reused: false,
+              });
+            };
 
-      if (payload?.password && passwordPrompt) {
-        finish([payload.password]);
-        return;
-      }
+            const finishClose = (code, signal) => {
+              if (closed) {
+                return;
+              }
 
-      finish([]);
-    });
+              closed = true;
 
-    client.connect(getSshConnectionConfig(payload));
+              const currentRecord = getDeviceConnectionRecord(deviceId);
+              const wasDisconnecting = currentRecord?.state === "disconnecting";
+
+              clearDeviceTerminalInactivityTimer(sessionRecord);
+              deviceTerminalSessions.delete(deviceId);
+              setDeviceConnectionState(deviceId, {
+                state: wasDisconnecting ? "disconnected" : code && code !== 0 ? "error" : "disconnected",
+                process: null,
+                lastError: wasDisconnecting ? null : currentRecord?.lastError || (code && code !== 0 ? `SSH exited with code ${code}` : null),
+              });
+              broadcastDeviceTerminalExit(deviceId, code || 0, signal || null);
+              appendSshTerminalLog(
+                `close deviceId=${deviceId} address=${address} port=${port} sshUser=${sshUser} code=${code ?? ""} signal=${signal ?? ""}`
+              );
+            };
+
+            channel.once("close", () => finishClose(0, null));
+            client.once("close", (code, signal) => finishClose(code, signal));
+            client.once("error", (error) => {
+              if (settled) {
+                appendSshTerminalLog(
+                  `session-error deviceId=${deviceId} address=${address} port=${port} sshUser=${sshUser} level=${error?.level || ""} code=${error?.code || ""} message=${error?.message || String(error)}`
+                );
+                return;
+              }
+
+              clearDeviceTerminalInactivityTimer(sessionRecord);
+              deviceTerminalSessions.delete(deviceId);
+              setDeviceConnectionState(deviceId, {
+                state: "error",
+                process: null,
+                lastError: error.message,
+              });
+              appendSshTerminalLog(
+                `open-error deviceId=${deviceId} address=${address} port=${port} sshUser=${sshUser} level=${error?.level || ""} code=${error?.code || ""} message=${error?.message || String(error)}`
+              );
+              reject(error);
+            });
+
+            finishOpen();
+          }
+        );
+      })
+      .catch(finishReject);
   });
 }
 
@@ -1745,8 +2103,19 @@ function getActiveIpv4Candidates() {
 function getSubnetScanTargets() {
   const seen = new Set();
   const targets = [];
+  const candidates = getActiveIpv4Candidates();
 
-  for (const entry of getActiveIpv4Candidates()) {
+  appendNetworkDiscoveryLog(
+    `active-ipv4-candidates=${JSON.stringify(
+      candidates.map((entry) => ({
+        address: entry.address,
+        netmask: entry.netmask,
+        cidr: entry.cidr,
+      }))
+    )}`
+  );
+
+  for (const entry of candidates) {
     const base = ipv4ToInt(entry.address) & ipv4ToInt("255.255.255.0");
 
     for (let host = 1; host <= 254; host += 1) {
@@ -1816,36 +2185,162 @@ async function mapWithConcurrency(items, concurrency, worker) {
   return results;
 }
 
-async function discoverSshDevices() {
-  const targets = getSubnetScanTargets();
+function delay(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
 
+async function readArpNeighbors(logPrefix = "arp-neighbors") {
+  const arpBinary = resolveSystemBinary("arp");
+  appendNetworkDiscoveryLog(`arp-binary=${arpBinary}`);
+  const { stdout } = await execFileAsync(arpBinary, ["-a"], {
+    maxBuffer: 5 * 1024 * 1024,
+  });
+  const parsedNeighbors = parseArpNeighbors(stdout)
+    .filter((device, index, devices) => devices.findIndex((item) => item.address === device.address) === index)
+    .sort((left, right) => left.name.localeCompare(right.name));
+  appendNetworkDiscoveryLog(`${logPrefix}=${JSON.stringify(parsedNeighbors.map((device) => device.address))}`);
+  return parsedNeighbors;
+}
+
+async function probePingTarget(address, timeoutMs) {
+  const pingBinary = resolveSystemBinary("ping");
+
+  try {
+    await execFileAsync(pingBinary, ["-n", "-c", "1", "-W", String(timeoutMs), address], {
+      maxBuffer: 1024 * 1024,
+      timeout: Math.max(timeoutMs + 750, 1500),
+    });
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
+
+async function probeLanTargets(targets, logPrefix) {
   if (!targets.length) {
+    appendNetworkDiscoveryLog(`${logPrefix}-target-count=0`);
     return [];
   }
 
+  appendNetworkDiscoveryLog(`${logPrefix}-target-count=${targets.length}`);
+
+  const results = await mapWithConcurrency(targets, 48, async (address) => {
+    const isReachable = await probePingTarget(address, 500);
+
+    if (!isReachable) {
+      return null;
+    }
+
+    return {
+      id: `network:${address}`,
+      name: address,
+      address,
+      protocol: "icmp",
+      transport: "network",
+      type: "network",
+      source: "network",
+    };
+  });
+
+  const sortedResults = results.sort((left, right) => left.address.localeCompare(right.address));
+  appendNetworkDiscoveryLog(`${logPrefix}-discovered=${JSON.stringify(sortedResults.map((device) => device.address))}`);
+  rememberRecentNetworkDevices(sortedResults);
+  return sortedResults;
+}
+
+async function probeSshTargets(targets, logPrefix) {
+  if (!targets.length) {
+    appendNetworkDiscoveryLog(`${logPrefix}-target-count=0`);
+    return [];
+  }
+
+  appendNetworkDiscoveryLog(`${logPrefix}-target-count=${targets.length}`);
+
+  const results = await mapWithConcurrency(targets, sshDiscoveryConcurrency, async (target) => {
+    const isOpen = await probeTcpPort(target.address, target.port || sshDiscoveryPort, sshDiscoveryTimeoutMs);
+
+    if (!isOpen) {
+      return null;
+    }
+
+    return {
+      id: target.id || `network-ssh:${target.address}`,
+      name: target.name || target.address,
+      address: target.address,
+      port: target.port || sshDiscoveryPort,
+      sshPort: target.port || sshDiscoveryPort,
+      protocol: target.protocol || "ssh",
+      transport: "network",
+      type: "network",
+      source: target.source || "network",
+      savedDeviceId: target.savedDeviceId || null,
+    };
+  });
+
+  const sortedResults = results.sort((left, right) => left.address.localeCompare(right.address));
+  appendNetworkDiscoveryLog(`${logPrefix}-discovered=${JSON.stringify(sortedResults.map((device) => device.address))}`);
+  rememberRecentNetworkDevices(sortedResults);
+  return sortedResults;
+}
+
+async function refreshSubnetSshDiscovery(subnetTargets) {
+  if (subnetDiscoveryInFlightPromise) {
+    return subnetDiscoveryInFlightPromise;
+  }
+
+  const fallbackTargets = buildUniqueNetworkTargets([], subnetTargets);
+
+  subnetDiscoveryInFlightPromise = (async () => {
+    const devices = await probeSshTargets(fallbackTargets, "ssh-subnet");
+    subnetDiscoveryCache = {
+      expiresAt: Date.now() + subnetDiscoveryCacheTtlMs,
+      devices,
+    };
+    return devices;
+  })();
+
   try {
-    const results = await mapWithConcurrency(targets, sshDiscoveryConcurrency, async (address) => {
-      const isOpen = await probeTcpPort(address, sshDiscoveryPort, sshDiscoveryTimeoutMs);
+    return await subnetDiscoveryInFlightPromise;
+  } finally {
+    subnetDiscoveryInFlightPromise = null;
+  }
+}
 
-      if (!isOpen) {
-        return null;
-      }
+async function discoverSshDevices() {
+  const savedTargets = listSavedNetworkDevicesFromLocalDb();
+  const recentTargets = listRecentNetworkDevices();
+  const subnetTargets = getSubnetScanTargets();
 
-      return {
-        id: `network-ssh:${address}`,
-        name: address,
-        address,
-        port: sshDiscoveryPort,
-        protocol: "ssh",
-        transport: "network",
-        type: "network",
-        source: "network",
-      };
-    });
+  try {
+    const prioritizedTargets = buildUniqueNetworkTargets(savedTargets, recentTargets.map((device) => device.address));
+    const prioritizedResults = await probeSshTargets(prioritizedTargets, "ssh-priority");
+    const now = Date.now();
+    const cachedSubnetResults = subnetDiscoveryCache.expiresAt > now ? subnetDiscoveryCache.devices : [];
 
-    return results.sort((left, right) => left.address.localeCompare(right.address));
+    if (subnetDiscoveryCache.expiresAt <= now) {
+      void refreshSubnetSshDiscovery(subnetTargets).catch((error) => {
+        appendNetworkDiscoveryLog(`ssh-subnet-refresh-error=${error?.message || String(error)}`);
+      });
+    } else {
+      appendNetworkDiscoveryLog(`ssh-subnet-cache-hit=${cachedSubnetResults.length}`);
+    }
+
+    const mergedResults = [...prioritizedResults, ...cachedSubnetResults]
+      .filter((device, index, devices) => devices.findIndex((item) => item.address === device.address) === index)
+      .sort((left, right) => left.address.localeCompare(right.address));
+
+    appendNetworkDiscoveryLog(`ssh-merged-discovered=${JSON.stringify(mergedResults.map((device) => device.address))}`);
+
+    if (mergedResults.length > 0) {
+      return mergedResults;
+    }
+
+    return await refreshSubnetSshDiscovery(subnetTargets);
   } catch (error) {
     console.error("Failed to discover SSH devices:", error);
+    appendNetworkDiscoveryLog(`ssh-discovery-error=${error?.message || String(error)}`);
     return [];
   }
 }
@@ -1908,41 +2403,104 @@ function parseArpNeighbors(stdout) {
 
 async function listNetworkDevices() {
   try {
-    const { stdout } = await execFileAsync(resolveSystemBinary("arp"), ["-a"], {
-      maxBuffer: 5 * 1024 * 1024,
-    });
+    const now = Date.now();
 
-    return parseArpNeighbors(stdout)
-      .filter((device, index, devices) => devices.findIndex((item) => item.address === device.address) === index)
-      .sort((left, right) => left.name.localeCompare(right.name));
+    if (lanDiscoveryCache.expiresAt > now && lanDiscoveryCache.devices.length > 0) {
+      appendNetworkDiscoveryLog(`lan-cache-hit=${lanDiscoveryCache.devices.length}`);
+      return lanDiscoveryCache.devices;
+    }
+
+    if (lanDiscoveryInFlightPromise) {
+      appendNetworkDiscoveryLog("lan-await-in-flight");
+      return lanDiscoveryInFlightPromise;
+    }
+
+    lanDiscoveryInFlightPromise = (async () => {
+      const subnetTargets = getSubnetScanTargets();
+      const [pingDevices, arpDevices] = await Promise.all([
+        probeLanTargets(subnetTargets, "lan-ping"),
+        readArpNeighbors("arp-neighbors-after-lan").catch((error) => {
+          appendNetworkDiscoveryLog(`arp-neighbors-after-lan-error=${error?.message || String(error)}`);
+          return [];
+        }),
+      ]);
+
+      const mergedDevices = [...pingDevices, ...arpDevices]
+        .filter((device, index, devices) => devices.findIndex((item) => item.address === device.address) === index)
+        .sort((left, right) => left.address.localeCompare(right.address));
+
+      lanDiscoveryCache = {
+        expiresAt: Date.now() + lanDiscoveryCacheTtlMs,
+        devices: mergedDevices,
+      };
+
+      appendNetworkDiscoveryLog(`lan-merged-discovered=${JSON.stringify(mergedDevices.map((device) => device.address))}`);
+      return mergedDevices;
+    })();
+
+    try {
+      return await lanDiscoveryInFlightPromise;
+    } finally {
+      lanDiscoveryInFlightPromise = null;
+    }
   } catch (error) {
     console.error("Failed to list network devices:", error);
+    appendNetworkDiscoveryLog(`lan-error=${error?.message || String(error)}`);
     return [];
   }
 }
 
 async function listAvailableDevices() {
-  const [serialDevices, arpDevices, sshDevices] = await Promise.all([
-    listSerialDevices(),
-    listNetworkDevices(),
-    discoverSshDevices(),
-  ]);
-  const mergedNetworkDevices = [...arpDevices, ...sshDevices]
-    .filter((device, index, devices) => devices.findIndex((item) => item.address === device.address) === index)
-    .sort((left, right) => left.name.localeCompare(right.name));
-  const groups = {
-    usb: serialDevices.filter((device) => device.transport === "usb"),
-    bluetooth: serialDevices.filter((device) => device.transport === "bluetooth"),
-    network: mergedNetworkDevices,
-  };
+  const now = Date.now();
 
-  return {
-    connected: serialDevices,
-    groups,
-    network: {
-      neighbors: mergedNetworkDevices,
-    },
-  };
+  if (deviceListCache.result && deviceListCache.expiresAt > now) {
+    appendNetworkDiscoveryLog("list-available cache-hit");
+    return deviceListCache.result;
+  }
+
+  if (deviceListInFlightPromise) {
+    appendNetworkDiscoveryLog("list-available await-in-flight");
+    return deviceListInFlightPromise;
+  }
+
+  deviceListInFlightPromise = (async () => {
+    const [serialDevices, lanDevices, sshDevices] = await Promise.all([
+      listSerialDevices(),
+      listNetworkDevices(),
+      discoverSshDevices(),
+    ]);
+    const mergedNetworkDevices = [...lanDevices, ...sshDevices]
+      .filter((device, index, devices) => devices.findIndex((item) => item.address === device.address) === index)
+      .sort((left, right) => left.name.localeCompare(right.name));
+    appendNetworkDiscoveryLog(
+      `list-available summary usb=${serialDevices.filter((device) => device.transport === "usb").length} bluetooth=${serialDevices.filter((device) => device.transport === "bluetooth").length} lan=${lanDevices.length} ssh=${sshDevices.length} network=${mergedNetworkDevices.length}`
+    );
+    const groups = {
+      usb: serialDevices.filter((device) => device.transport === "usb"),
+      bluetooth: serialDevices.filter((device) => device.transport === "bluetooth"),
+      network: mergedNetworkDevices,
+    };
+    const result = {
+      connected: serialDevices,
+      groups,
+      network: {
+        neighbors: mergedNetworkDevices,
+      },
+    };
+
+    deviceListCache = {
+      expiresAt: Date.now() + deviceListCacheTtlMs,
+      result,
+    };
+
+    return result;
+  })();
+
+  try {
+    return await deviceListInFlightPromise;
+  } finally {
+    deviceListInFlightPromise = null;
+  }
 }
 
 function configureAutoUpdater() {
@@ -2287,13 +2845,32 @@ ipcMain.handle("device:terminal-open", async (_event, payload) => {
     try {
       return await openSshDeviceTerminal(payload);
     } catch (error) {
-      if (
-        error?.level === "client-authentication" &&
-        !payload?.password
-      ) {
+      appendSshTerminalLog(
+        `ipc-open-error deviceId=${payload?.id} address=${payload?.address || ""} port=${payload?.port || ""} sshUser=${payload?.sshUser || ""} level=${error?.level || ""} code=${error?.code || ""} message=${error?.message || String(error)}`
+      );
+
+      if (isSshAuthenticationError(error) && !payload?.password) {
         return {
           authRequired: true,
           transport: "network",
+        };
+      }
+
+      if (isSshAuthenticationError(error)) {
+        return {
+          error: true,
+          expected: true,
+          transport: "network",
+          message: "SSH authentication failed.",
+        };
+      }
+
+      if (isSshHostVerificationError(error)) {
+        return {
+          error: true,
+          expected: true,
+          transport: "network",
+          message: "SSH host key verification failed.",
         };
       }
 

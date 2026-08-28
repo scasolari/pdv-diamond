@@ -94,34 +94,8 @@ function findDetectedDeviceMatch(savedDevice, detectedDevices) {
     );
 }
 
-function findPreferredNetworkSibling(savedDevice, detectedDevices) {
-    if (!savedDevice?.path || !isArduinoLikeDevice(savedDevice)) {
-        return null;
-    }
-
-    const networkCandidates = (detectedDevices || []).filter((detectedDevice) => {
-        return Boolean(
-            detectedDevice?.address &&
-            (detectedDevice?.type === "network" ||
-                detectedDevice?.transport === "network" ||
-                detectedDevice?.protocol === "ssh")
-        );
-    });
-
-    if (networkCandidates.length === 1) {
-        return networkCandidates[0];
-    }
-
-    return null;
-}
-
 function getResolvedDetectedDevice(savedDevice, detectedDevices) {
-    const detectedMatch = findDetectedDeviceMatch(savedDevice, detectedDevices);
-    const preferredNetworkSibling = detectedMatch?.address
-        ? null
-        : findPreferredNetworkSibling(savedDevice, detectedDevices);
-
-    return detectedMatch || preferredNetworkSibling || null;
+    return findDetectedDeviceMatch(savedDevice, detectedDevices);
 }
 
 function isSavedDeviceAvailable(savedDevice, detectedDevices) {
@@ -219,7 +193,10 @@ function DevicePage({ setDeviceTerminalOpen }) {
     }, [device?.id]);
 
     const terminalMode = useMemo(() => {
-        if (device?.address) {
+        if (
+            (device?.transport === "network" || device?.type === "network") &&
+            device?.address
+        ) {
             return "ssh";
         }
 
@@ -228,11 +205,11 @@ function DevicePage({ setDeviceTerminalOpen }) {
         }
 
         return null;
-    }, [device?.address, device?.path]);
+    }, [device?.address, device?.path, device?.protocol, device?.transport, device?.type]);
 
     const terminalAvailabilityMessage = useMemo(() => {
         if (terminalMode === "ssh") {
-            return "SSH connection is not available for this device.";
+            return "Unable to open the SSH terminal for this device.";
         }
 
         if (terminalMode === "serial") {
@@ -240,7 +217,7 @@ function DevicePage({ setDeviceTerminalOpen }) {
         }
 
         return "No supported terminal is available for this device.";
-    }, [terminalMode]);
+    }, [device?.address, device?.transport, device?.type, terminalMode]);
 
     useEffect(() => {
         if (!router.isReady || !id) {
@@ -280,6 +257,7 @@ function DevicePage({ setDeviceTerminalOpen }) {
                                 ...payload,
                                 address: resolvedDevice.address ?? payload.address ?? null,
                                 port: resolvedDevice.port ?? payload.port ?? null,
+                                sshPort: resolvedDevice.sshPort ?? payload.sshPort ?? payload.port ?? null,
                                 protocol: resolvedDevice.protocol ?? payload.protocol ?? null,
                                 path: resolvedDevice.path ?? payload.path ?? null,
                             };
@@ -370,12 +348,14 @@ function DevicePage({ setDeviceTerminalOpen }) {
 
                         const nextAddress = resolvedDevice.address ?? latestDevice.address ?? null;
                         const nextPort = resolvedDevice.port ?? latestDevice.port ?? null;
+                        const nextSshPort = resolvedDevice.sshPort ?? latestDevice.sshPort ?? latestDevice.port ?? null;
                         const nextProtocol = resolvedDevice.protocol ?? latestDevice.protocol ?? null;
                         const nextPath = resolvedDevice.path ?? latestDevice.path ?? null;
 
                         if (
                             nextAddress === (latestDevice.address ?? null) &&
                             nextPort === (latestDevice.port ?? null) &&
+                            nextSshPort === (latestDevice.sshPort ?? latestDevice.port ?? null) &&
                             nextProtocol === (latestDevice.protocol ?? null) &&
                             nextPath === (latestDevice.path ?? null)
                         ) {
@@ -386,6 +366,7 @@ function DevicePage({ setDeviceTerminalOpen }) {
                             ...latestDevice,
                             address: nextAddress,
                             port: nextPort,
+                            sshPort: nextSshPort,
                             protocol: nextProtocol,
                             path: nextPath,
                         };
@@ -426,12 +407,14 @@ function DevicePage({ setDeviceTerminalOpen }) {
 
                             const nextAddress = retryResolvedDevice.address ?? latestDevice.address ?? null;
                             const nextPort = retryResolvedDevice.port ?? latestDevice.port ?? null;
+                            const nextSshPort = retryResolvedDevice.sshPort ?? latestDevice.sshPort ?? latestDevice.port ?? null;
                             const nextProtocol = retryResolvedDevice.protocol ?? latestDevice.protocol ?? null;
                             const nextPath = retryResolvedDevice.path ?? latestDevice.path ?? null;
 
                             if (
                                 nextAddress === (latestDevice.address ?? null) &&
                                 nextPort === (latestDevice.port ?? null) &&
+                                nextSshPort === (latestDevice.sshPort ?? latestDevice.port ?? null) &&
                                 nextProtocol === (latestDevice.protocol ?? null) &&
                                 nextPath === (latestDevice.path ?? null)
                             ) {
@@ -442,6 +425,7 @@ function DevicePage({ setDeviceTerminalOpen }) {
                                 ...latestDevice,
                                 address: nextAddress,
                                 port: nextPort,
+                                sshPort: nextSshPort,
                                 protocol: nextProtocol,
                                 path: nextPath,
                             };
@@ -524,7 +508,8 @@ function DevicePage({ setDeviceTerminalOpen }) {
         let initialFitFrameId = null;
         const nextTerminalMode = terminalMode;
         const sshAddress = device?.address;
-        const sshPort = device?.port;
+        const sshPort = Number(device?.sshPort ?? device?.port) || 22;
+        const sshUser = String(device?.sshUser || "").trim() || "arduino";
         const serialPath = device?.path;
         const serialBaudRate = Number(device?.baudRate) || 115200;
 
@@ -594,7 +579,7 @@ function DevicePage({ setDeviceTerminalOpen }) {
             passwordBuffer = "";
             setTerminalError("");
             terminal.writeln("");
-            terminal.write(`Password for arduino@${sshAddress}: `);
+            terminal.write(`Password for ${sshUser}@${sshAddress}: `);
 
             passwordInputSubscription = terminal.onData((data) => {
                 if (data === "\r") {
@@ -641,7 +626,7 @@ function DevicePage({ setDeviceTerminalOpen }) {
                     id: device.id,
                     address: sshAddress,
                     port: sshPort,
-                    sshUser: "arduino",
+                    sshUser,
                     password,
                     cols: terminal.cols,
                     rows: terminal.rows,
@@ -798,7 +783,7 @@ function DevicePage({ setDeviceTerminalOpen }) {
             setAvailabilityMessage("");
 
             if (nextTerminalMode === "ssh") {
-                terminal.writeln(`$ ssh arduino@${sshAddress}`);
+                terminal.writeln(`$ ssh ${sshUser}@${sshAddress}`);
                 await openSshSession();
             } else {
                 terminal.writeln(`$ serial ${serialPath}`);
@@ -907,11 +892,16 @@ function DevicePage({ setDeviceTerminalOpen }) {
                             {availabilityMessage}
                         </div>
                     ) : null}
-                    {!loadError ? (
+                    {!loadError && terminalMode ? (
                         <div
                             ref={terminalContainerRef}
                             className="h-full w-full overflow-hidden bg-black p-2"
                         />
+                    ) : null}
+                    {!loadError && !terminalMode ? (
+                        <div className="flex h-full items-center justify-center px-6 text-center text-sm font-medium text-neutral-500">
+                            {availabilityMessage || terminalAvailabilityMessage}
+                        </div>
                     ) : null}
                 </div>
             </div>

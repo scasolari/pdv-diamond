@@ -71,6 +71,8 @@ model SavedDevice {
   path         String?
   address      String?
   port         Int?
+  sshUser      String?
+  sshPort      Int?
   protocol     String?
   manufacturer String?
   serialNumber String?
