@@ -108,6 +108,39 @@ function parseEnvFile(fileContent) {
     }, {});
 }
 
+function resolveSystemBinary(commandName) {
+  if (process.platform === "darwin") {
+    const darwinPaths = {
+      arp: ["/usr/sbin/arp", "/sbin/arp"],
+      system_profiler: ["/usr/sbin/system_profiler"],
+    };
+
+    const candidates = darwinPaths[commandName] || [];
+
+    for (const candidate of candidates) {
+      if (fs.existsSync(candidate)) {
+        return candidate;
+      }
+    }
+  }
+
+  if (process.platform === "win32") {
+    const winPaths = {
+      arp: ["C:\\Windows\\System32\\arp.exe"],
+    };
+
+    const candidates = winPaths[commandName] || [];
+
+    for (const candidate of candidates) {
+      if (fs.existsSync(candidate)) {
+        return candidate;
+      }
+    }
+  }
+
+  return commandName;
+}
+
 function loadDesktopEnv() {
   if (app.isPackaged) {
     return;
@@ -1582,7 +1615,7 @@ async function listMacBluetoothDeviceNames() {
   }
 
   try {
-    const { stdout } = await execFileAsync("system_profiler", ["SPBluetoothDataType", "-json"], {
+    const { stdout } = await execFileAsync(resolveSystemBinary("system_profiler"), ["SPBluetoothDataType", "-json"], {
       maxBuffer: 5 * 1024 * 1024,
     });
     const parsed = JSON.parse(stdout);
@@ -1875,7 +1908,7 @@ function parseArpNeighbors(stdout) {
 
 async function listNetworkDevices() {
   try {
-    const { stdout } = await execFileAsync("arp", ["-a"], {
+    const { stdout } = await execFileAsync(resolveSystemBinary("arp"), ["-a"], {
       maxBuffer: 5 * 1024 * 1024,
     });
 
