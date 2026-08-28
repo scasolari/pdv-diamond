@@ -23,6 +23,7 @@ const appEntryUrl = `${devServerUrl.replace(/\/$/, "")}/app/dashboard`;
 const isDev = process.env.NODE_ENV === "development";
 const electronSessionPartition = "persist:placedv-desktop";
 const desktopAppName = "Placedv Labs";
+const desktopIconPath = path.join(__dirname, "..", "assets", "icons", "placedv-labs-icon-current.png");
 const updateCheckIntervalMs = 5 * 60 * 1000;
 const sshTerminalInactivityTimeoutMs = 5 * 60 * 1000;
 const serialConnectionLogLimit = 200;
@@ -53,6 +54,24 @@ let updateStatus = {
   label: "Check for updates",
   progress: null,
 };
+
+function getDesktopIcon() {
+  if (!fs.existsSync(desktopIconPath)) {
+    return undefined;
+  }
+
+  return desktopIconPath;
+}
+
+function applyDesktopDockIcon() {
+  const desktopIcon = getDesktopIcon();
+
+  if (process.platform === "darwin" && desktopIcon) {
+    app.dock.setIcon(desktopIcon);
+  }
+
+  return desktopIcon;
+}
 
 app.setName(desktopAppName);
 process.title = desktopAppName;
@@ -2102,11 +2121,14 @@ function buildAppMenu() {
 }
 
 function createWindow() {
+    const desktopIcon = applyDesktopDockIcon();
+
     mainWindow = new BrowserWindow({
         width: 1100,
         height: 780,
         minWidth: 840,
         minHeight: 620,
+        ...(desktopIcon ? { icon: desktopIcon } : {}),
         backgroundColor: getWindowBackgroundColor(nativeTheme.shouldUseDarkColors ? "dark" : "light"),
         ...(process.platform === "darwin"
             ? {
@@ -2353,6 +2375,7 @@ ipcMain.handle("mission:upload-files", async (_event, payload) => {
 async function loadApp() {
   configureAutoUpdater();
   buildAppMenu();
+  applyDesktopDockIcon();
   createWindow();
 
   if (isDev) {
