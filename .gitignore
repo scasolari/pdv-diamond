@@ -43,3 +43,5 @@ prisma/prisma/placedv-local.db
 *.db-journal
 *.db-wal
 *.db-shm
+
+assets/icons/placedv-labs-icon-*
