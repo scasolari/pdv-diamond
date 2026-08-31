@@ -62,6 +62,32 @@ jobs:
       - name: Generate Prisma client
         run: npx prisma generate
 
+      - name: Prepare Apple API key file
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require("fs");
+          const os = require("os");
+          const path = require("path");
+
+          const secret = (process.env.APPLE_API_KEY || "").trim();
+          const keyId = (process.env.APPLE_API_KEY_ID || "AuthKey").trim();
+          const tempDir = process.env.RUNNER_TEMP || os.tmpdir();
+          const keyPath = path.join(tempDir, `AuthKey_${keyId}.p8`);
+
+          let keyContent = secret;
+
+          if (!keyContent.startsWith("-----BEGIN")) {
+            keyContent = Buffer.from(keyContent, "base64").toString("utf8").trim();
+          }
+
+          fs.writeFileSync(keyPath, keyContent.endsWith("\n") ? keyContent : `${keyContent}\n`, "utf8");
+          fs.chmodSync(keyPath, 0o600);
+          fs.appendFileSync(process.env.GITHUB_ENV, `APPLE_API_KEY=${keyPath}\n`);
+
+          console.log(`Apple API key written to ${keyPath}`);
+          NODE
+
       - name: Build Mac installer
         run: npm run dist:mac -- --publish never
 
