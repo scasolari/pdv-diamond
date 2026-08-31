@@ -1,6 +1,8 @@
 const fs = require("fs");
 const path = require("path");
 
+const entitlementsPath = path.join(__dirname, "build", "entitlements.mac.plist");
+
 module.exports = {
   appId: "com.placedv.labs",
   productName: "Placedv Labs",
@@ -27,8 +29,8 @@ module.exports = {
     notarize: true,
     hardenedRuntime: true,
     gatekeeperAssess: false,
-    entitlements: "build/entitlements.mac.plist",
-    entitlementsInherit: "build/entitlements.mac.plist",
+    entitlements: entitlementsPath,
+    entitlementsInherit: entitlementsPath,
   },
   win: {
     icon: "build/icon.ico",
