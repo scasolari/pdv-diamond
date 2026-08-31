@@ -30,7 +30,10 @@ module.exports = {
     hardenedRuntime: true,
     gatekeeperAssess: false,
     entitlements: entitlementsPath,
-    entitlementsInherit: entitlementsPath,
+    entitlementsInherit: path.join(__dirname, "build", "entitlements.mac.inherit.plist"),
+    sign: {
+      preAutoEntitlements: false,
+    },
   },
   win: {
     icon: "build/icon.ico",
