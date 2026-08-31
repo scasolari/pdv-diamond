@@ -39,6 +39,7 @@ jobs:
       DATABASE_URL: file:./prisma/placedv-local.db
       CI: true
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      NEXTAUTH_SECRET: ${{ secrets.NEXTAUTH_SECRET }}
       CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
       CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
       APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
@@ -61,6 +62,33 @@ jobs:
 
       - name: Generate Prisma client
         run: npx prisma generate
+
+      - name: Prepare runtime config
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require("fs");
+          const os = require("os");
+          const path = require("path");
+
+          const envPath = path.join(process.env.RUNNER_TEMP || os.tmpdir(), "release-runtime.env");
+          const entries = [
+            ["NEXTAUTH_SECRET", process.env.NEXTAUTH_SECRET],
+          ].filter(([, value]) => typeof value === "string" && value.trim());
+
+          if (!process.env.NEXTAUTH_SECRET || !String(process.env.NEXTAUTH_SECRET).trim()) {
+            throw new Error("NEXTAUTH_SECRET is required to build a production runtime config.");
+          }
+
+          const content = entries
+            .map(([key, value]) => `${key}=${String(value).replace(/\r?\n/g, "\\n")}`)
+            .join("\n");
+
+          fs.writeFileSync(envPath, `${content}\n`, "utf8");
+          console.log(`Runtime env written to ${envPath}`);
+          NODE
+
+          npm run runtime-config:generate -- --env "$RUNNER_TEMP/release-runtime.env" --output build/runtime-config.json
 
       - name: Prepare Apple API key file
         shell: bash

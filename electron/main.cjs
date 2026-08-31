@@ -38,16 +38,6 @@ const sshTerminalLogFilename = "ssh-terminal.log";
 const requiredProductionEnvKeys = [
   "NEXTAUTH_SECRET",
 ];
-const optionalProviderEnvGroups = [
-  {
-    name: "GitHub",
-    keys: ["GITHUB_CLIENT_ID", "GITHUB_CLIENT_SECRET"],
-  },
-  {
-    name: "Facebook",
-    keys: ["FACEBOOK_CLIENT_ID", "FACEBOOK_CLIENT_SECRET"],
-  },
-];
 
 let mainWindow;
 let isQuitting = false;
@@ -206,6 +196,10 @@ function getRuntimeConfigPath() {
   return path.join(app.getPath("userData"), runtimeConfigFilename);
 }
 
+function getPackagedRuntimeConfigPath() {
+  return path.join(process.resourcesPath, runtimeConfigFilename);
+}
+
 function getKnownHostsPath() {
   return path.join(app.getPath("userData"), sshKnownHostsFilename);
 }
@@ -296,6 +290,14 @@ function ensureRuntimeConfigFile() {
     return runtimeConfigPath;
   }
 
+  const packagedRuntimeConfigPath = getPackagedRuntimeConfigPath();
+
+  if (app.isPackaged && fs.existsSync(packagedRuntimeConfigPath)) {
+    fs.mkdirSync(path.dirname(runtimeConfigPath), { recursive: true });
+    fs.copyFileSync(packagedRuntimeConfigPath, runtimeConfigPath);
+    return runtimeConfigPath;
+  }
+
   fs.mkdirSync(path.dirname(runtimeConfigPath), { recursive: true });
   fs.writeFileSync(
     runtimeConfigPath,
@@ -308,10 +310,25 @@ function ensureRuntimeConfigFile() {
 
 function loadRuntimeConfigFromDisk() {
   const runtimeConfigPath = ensureRuntimeConfigFile();
+  const packagedRuntimeConfigPath = getPackagedRuntimeConfigPath();
 
   try {
     const rawConfig = fs.readFileSync(runtimeConfigPath, "utf8");
     const parsedConfig = JSON.parse(rawConfig);
+    let packagedConfig = {};
+
+    if (app.isPackaged && fs.existsSync(packagedRuntimeConfigPath)) {
+      try {
+        const rawPackagedConfig = fs.readFileSync(packagedRuntimeConfigPath, "utf8");
+        const parsedPackagedConfig = JSON.parse(rawPackagedConfig);
+
+        if (parsedPackagedConfig && typeof parsedPackagedConfig === "object" && !Array.isArray(parsedPackagedConfig)) {
+          packagedConfig = parsedPackagedConfig;
+        }
+      } catch (error) {
+        console.error(`Failed to read packaged runtime config at ${packagedRuntimeConfigPath}:`, error);
+      }
+    }
 
     if (!parsedConfig || typeof parsedConfig !== "object" || Array.isArray(parsedConfig)) {
       throw new Error("Runtime config must contain a JSON object.");
@@ -319,7 +336,10 @@ function loadRuntimeConfigFromDisk() {
 
     return {
       path: runtimeConfigPath,
-      values: parsedConfig,
+      values: {
+        ...packagedConfig,
+        ...parsedConfig,
+      },
     };
   } catch (error) {
     throw new Error(`Unable to read runtime config at ${runtimeConfigPath}: ${error.message}`);
@@ -340,42 +360,11 @@ function applyRuntimeConfigEnv() {
   }
 
   const missingKeys = requiredProductionEnvKeys.filter((key) => !String(process.env[key] || "").trim());
-  const incompleteProviders = [];
-  const enabledProviders = [];
-
-  for (const providerGroup of optionalProviderEnvGroups) {
-    const filledKeys = providerGroup.keys.filter((key) => String(process.env[key] || "").trim());
-
-    if (filledKeys.length === 0) {
-      continue;
-    }
-
-    if (filledKeys.length !== providerGroup.keys.length) {
-      incompleteProviders.push({
-        name: providerGroup.name,
-        missingKeys: providerGroup.keys.filter((key) => !String(process.env[key] || "").trim()),
-      });
-      continue;
-    }
-
-    enabledProviders.push(providerGroup.name);
-  }
-
-  if (missingKeys.length > 0 || incompleteProviders.length > 0 || enabledProviders.length === 0) {
+  if (missingKeys.length > 0) {
     const detailLines = [];
 
     if (missingKeys.length > 0) {
       detailLines.push(`Missing required keys: ${missingKeys.join(", ")}`);
-    }
-
-    if (incompleteProviders.length > 0) {
-      for (const provider of incompleteProviders) {
-        detailLines.push(`${provider.name} is partially configured. Missing keys: ${provider.missingKeys.join(", ")}`);
-      }
-    }
-
-    if (enabledProviders.length === 0) {
-      detailLines.push("No auth provider is fully configured. Configure at least one provider.");
     }
 
     const error = new Error(
@@ -390,8 +379,6 @@ function applyRuntimeConfigEnv() {
     error.runtimeConfigPath = runtimeConfigPath;
     error.runtimeConfigDir = path.dirname(runtimeConfigPath);
     error.missingKeys = missingKeys;
-    error.incompleteProviders = incompleteProviders;
-    error.enabledProviders = enabledProviders;
     throw error;
   }
 }
@@ -3029,8 +3016,6 @@ async function showStartupError(error) {
         `The packaged app needs ${runtimeConfigFilename} inside the userData folder.`,
         `Folder: ${error.runtimeConfigDir}`,
         error.missingKeys?.length ? `Missing keys: ${error.missingKeys.join(", ")}` : null,
-        ...(error.incompleteProviders || []).map((provider) => `${provider.name}: missing ${provider.missingKeys.join(", ")}`),
-        error.enabledProviders?.length ? `Enabled providers: ${error.enabledProviders.join(", ")}` : "Enabled providers: none",
       ].filter(Boolean).join("\n\n"),
     });
 

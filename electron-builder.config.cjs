@@ -2,6 +2,7 @@ const fs = require("fs");
 const path = require("path");
 
 const entitlementsPath = path.join(__dirname, "build", "entitlements.mac.plist");
+const runtimeConfigSourcePath = path.join(__dirname, "build", "runtime-config.json");
 
 module.exports = {
   appId: "com.placedv.labs",
@@ -77,6 +78,10 @@ module.exports = {
 
     if (fs.existsSync(prismaMigrationsSource)) {
       fs.cpSync(prismaMigrationsSource, prismaMigrationsTarget, { recursive: true });
+    }
+
+    if (fs.existsSync(runtimeConfigSourcePath)) {
+      fs.copyFileSync(runtimeConfigSourcePath, path.join(resourcesDir, "runtime-config.json"));
     }
   },
 };
