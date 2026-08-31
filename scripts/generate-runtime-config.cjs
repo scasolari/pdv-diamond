@@ -3,8 +3,37 @@ const os = require("os");
 const path = require("path");
 
 const projectRoot = path.resolve(__dirname, "..");
-const envPath = path.join(projectRoot, ".env");
 const packageJsonPath = path.join(projectRoot, "package.json");
+
+function parseArgs(argv) {
+  return argv.slice(2).reduce((result, arg, index, args) => {
+    if (!arg.startsWith("--")) {
+      return result;
+    }
+
+    const [rawKey, inlineValue] = arg.split("=", 2);
+    const key = rawKey.slice(2);
+
+    if (!key) {
+      return result;
+    }
+
+    if (inlineValue !== undefined) {
+      result[key] = inlineValue;
+      return result;
+    }
+
+    const nextValue = args[index + 1];
+
+    if (nextValue && !nextValue.startsWith("--")) {
+      result[key] = nextValue;
+    } else {
+      result[key] = "true";
+    }
+
+    return result;
+  }, {});
+}
 
 function parseEnvFile(fileContent) {
   return fileContent
@@ -52,23 +81,30 @@ function getUserDataDir(appName) {
   return path.join(xdgConfigHome, appName);
 }
 
+const args = parseArgs(process.argv);
+const envPath = path.resolve(args.env || path.join(projectRoot, ".env"));
+const runtimeConfigPathOverride = args.output ? path.resolve(args.output) : null;
+
 if (!fs.existsSync(envPath)) {
   throw new Error(`.env not found at ${envPath}`);
 }
 
 const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
 const appName = packageJson.productName || "Placedv Labs";
-const runtimeConfigDir = getUserDataDir(appName);
-const runtimeConfigPath = path.join(runtimeConfigDir, "runtime-config.json");
 const parsedEnv = parseEnvFile(fs.readFileSync(envPath, "utf8"));
+const runtimeConfigDir = runtimeConfigPathOverride ? path.dirname(runtimeConfigPathOverride) : getUserDataDir(appName);
+const runtimeConfigPath = runtimeConfigPathOverride || path.join(runtimeConfigDir, "runtime-config.json");
 
-const runtimeConfig = {
-  NEXTAUTH_SECRET: parsedEnv.NEXTAUTH_SECRET || "",
-  GITHUB_CLIENT_ID: parsedEnv.GITHUB_CLIENT_ID || "",
-  GITHUB_CLIENT_SECRET: parsedEnv.GITHUB_CLIENT_SECRET || "",
-  FACEBOOK_CLIENT_ID: parsedEnv.FACEBOOK_CLIENT_ID || "",
-  FACEBOOK_CLIENT_SECRET: parsedEnv.FACEBOOK_CLIENT_SECRET || "",
-};
+const runtimeConfig = Object.entries(parsedEnv).reduce((result, [key, value]) => {
+  result[key] = value;
+  return result;
+}, {});
+
+if (!runtimeConfig.NEXTAUTH_SECRET) {
+  throw new Error(
+    `NEXTAUTH_SECRET is missing in ${envPath}. Add it before generating runtime-config.json.`,
+  );
+}
 
 fs.mkdirSync(runtimeConfigDir, { recursive: true });
 fs.writeFileSync(runtimeConfigPath, `${JSON.stringify(runtimeConfig, null, 2)}\n`, "utf8");
