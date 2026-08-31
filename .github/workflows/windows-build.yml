@@ -5,6 +5,9 @@ on:
   push:
     branches:
       - main
+    paths-ignore:
+      - package.json
+      - package-lock.json
 
 concurrency:
   group: windows-build-${{ github.ref }}
@@ -35,7 +38,7 @@ jobs:
         run: npx prisma generate
 
       - name: Build Windows installer
-        run: npm run dist:win
+        run: npm run dist:win -- --publish never
 
       - name: Upload installer artifacts
         uses: actions/upload-artifact@v4
