@@ -24,6 +24,7 @@ module.exports = {
       "zip",
     ],
     icon: "build/icon.icns",
+    notarize: true,
     hardenedRuntime: true,
     gatekeeperAssess: false,
     entitlements: "build/entitlements.mac.plist",
