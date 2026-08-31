@@ -73,6 +73,10 @@ export default async function handler(req, res) {
             }
         }
 
+        if (typeof payload.pinned === "boolean") {
+            data.pinned = payload.pinned;
+        }
+
         try {
             const device = await db.savedDevice.update({
                 where: {

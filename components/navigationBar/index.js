@@ -227,6 +227,7 @@ function buildSavedDevicesStatusSignature(savedDevices) {
             device.pnpId,
             device.mac,
             device.interface,
+            device.pinned ? "1" : "0",
             device.protocol,
             device.vendorId,
             device.productId,
@@ -406,6 +407,14 @@ function NavigationBar(props) {
         () => buildSavedDevicesStatusSignature(ui?.savedDevices || []),
         [ui?.savedDevices]
     );
+    const pinnedSavedDevices = useMemo(
+        () => (ui?.savedDevices || []).filter((device) => !device.archivedAt && device.pinned),
+        [ui?.savedDevices]
+    );
+    const regularSavedDevices = useMemo(
+        () => (ui?.savedDevices || []).filter((device) => !device.archivedAt && !device.pinned),
+        [ui?.savedDevices]
+    );
     const statusTrackedSavedDevices = useMemo(
         () => (ui?.savedDevices || []).map((device) => ({
             id: device.id,
@@ -418,6 +427,7 @@ function NavigationBar(props) {
             pnpId: device.pnpId,
             mac: device.mac,
             interface: device.interface,
+            pinned: device.pinned,
             protocol: device.protocol,
             vendorId: device.vendorId,
             productId: device.productId,
@@ -1111,6 +1121,34 @@ function NavigationBar(props) {
         }
     }
 
+    async function handleTogglePinnedDevice(nextDevice = null) {
+        const targetDevice =
+            nextDevice ||
+            (ui?.savedDevices || []).find((device) => device.id === openDeviceMenuId) ||
+            null;
+
+        if (!targetDevice) {
+            return;
+        }
+
+        try {
+            setOpenDeviceMenuId(null);
+            await fetch(`/api/devices/${targetDevice.id}`, {
+                method: "PATCH",
+                headers: {
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                    pinned: !targetDevice.pinned,
+                }),
+            });
+
+            await refreshSavedDevices();
+        } catch (error) {
+            return;
+        }
+    }
+
     function openArchiveDeviceDialog(device) {
         setOpenDeviceMenuId(null);
 
@@ -1138,6 +1176,96 @@ function NavigationBar(props) {
         setOpenDeviceMenuId(null);
         setDeviceToRename(device);
         setRenameDeviceValue(device.alias || device.name || "");
+    }
+
+    function renderSavedDeviceItem(device) {
+        const deviceStatus = getSavedDeviceStatus(device.id);
+
+        return (
+            <li key={device.id} className="group truncate">
+                <div className={`relative rounded-lg ${router.asPath === `/app/device/${device.id}` || openDeviceMenuId === device.id ? `bg-neutral-100 dark:bg-neutral-800` : `hover:bg-neutral-100 dark:hover:bg-neutral-800`}`}>
+                    <button
+                        type="button"
+                        className="flex w-full min-w-0 items-center gap-3 truncate rounded-lg p-1.5 pr-10 text-left text-xs font-semibold"
+                        onClick={() => handleSavedDeviceNavigate(device)}
+                        aria-current={router.asPath === `/app/device/${device.id}` ? "page" : undefined}
+                    >
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round" className="!max-h-[16px] !min-h-[16px] !h-[16px] shrink-0 lucide lucide-hard-drive-icon lucide-hard-drive"><path d="M10 16h.01"/><path d="M2.212 11.577a2 2 0 0 0-.212.896V18a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-5.527a2 2 0 0 0-.212-.896L18.55 5.11A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><path d="M21.946 12.013H2.054"/><path d="M6 16h.01"/></svg>
+                        {deviceStatus === "loading" ? (
+                            <svg
+                                xmlns="http://www.w3.org/2000/svg"
+                                width="14"
+                                height="14"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="2"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                className="h-3.5 w-3.5 shrink-0 animate-spin text-neutral-500"
+                                aria-hidden="true"
+                            >
+                                <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+                            </svg>
+                        ) : (
+                            <span
+                                className={`h-2 w-2 shrink-0 rounded-full ${getSavedDeviceStatusClasses(deviceStatus)}`}
+                                aria-hidden="true"
+                            />
+                        )}
+                        <div className="flex min-w-0 flex-col truncate">
+                            <span className="truncate">{device.alias || device.name}</span>
+                        </div>
+                    </button>
+                    <DropdownMenu
+                        open={openDeviceMenuId === device.id}
+                        onOpenChange={(isOpen) => {
+                            setOpenDeviceMenuId(isOpen ? device.id : null);
+                        }}
+                    >
+                        <DropdownMenuTrigger asChild>
+                            <button
+                                type="button"
+                                aria-label={`Azioni per ${device.alias || device.name}`}
+                                className={`absolute right-1 top-1/2 z-10 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-md text-neutral-400 transition-opacity hover:text-neutral-700 focus-visible:outline-none dark:hover:text-neutral-100 ${openDeviceMenuId === device.id ? `opacity-100` : `opacity-0 group-hover:opacity-100 focus-visible:opacity-100`}`}
+                            >
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg>
+                            </button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent side="right" align="start" className="w-[180px]">
+                            <DropdownMenuItem
+                                onClick={() => handleTogglePinnedDevice(device)}
+                                className="cursor-pointer font-semibold !text-xs gap-1"
+                            >
+                                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="!h-[14px] lucide lucide-pin-icon lucide-pin"><path d="M12 17v5"/><path d="m9 10 3-3 3 3"/><path d="M12 14V4"/><path d="M8 4h8"/></svg>
+                                {device.pinned ? "Unpin device" : "Pin device"}
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                                onClick={() => openRenameDeviceDialog(device)}
+                                className="cursor-pointer font-semibold !text-xs gap-1"
+                            >
+                                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="!h-[14px] lucide lucide-square-pen-icon lucide-square-pen"><path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z"/></svg>
+                                Rename device
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                                onClick={() => openArchiveDeviceDialog(device)}
+                                className="cursor-pointer font-semibold !text-xs gap-1"
+                            >
+                                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="!h-[14px] lucide lucide-archive-icon lucide-archive"><rect width="20" height="5" x="2" y="3" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/></svg>
+                                Archivia device
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                                onClick={() => openDeleteDeviceDialog(device)}
+                                className="cursor-pointer font-semibold text-red-600 focus:text-red-600 !text-xs gap-1"
+                            >
+                                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="!h-[14px] lucide lucide-trash-icon lucide-trash"><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                                Elimina device
+                            </DropdownMenuItem>
+                        </DropdownMenuContent>
+                    </DropdownMenu>
+                </div>
+            </li>
+        );
     }
 
     async function handleRenameDevice() {
@@ -1596,6 +1724,16 @@ function NavigationBar(props) {
                             </li>
                         </ul>
                         <div className="px-3 pb-3">
+                            {pinnedSavedDevices.length ? (
+                                <div className="mb-2">
+                                    <h2 className="font-semibold !text-xs text-neutral-400">
+                                        Pinned device
+                                    </h2>
+                                    <ul className="mt-2 grid gap-1">
+                                        {pinnedSavedDevices.map((device) => renderSavedDeviceItem(device))}
+                                    </ul>
+                                </div>
+                            ) : null}
                             <div className="flex flex-row items-center justify-between">
                                 <h2 className="font-semibold !text-xs text-neutral-400">
                                     Devices
@@ -1607,86 +1745,9 @@ function NavigationBar(props) {
                                     <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" class="!h-[14px] !w-[14px] lucide lucide-plus-icon lucide-plus"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
                                 </div>
                             </div>
-                            {ui?.savedDevices?.length ? (
+                            {regularSavedDevices.length ? (
                                 <ul className="mt-2 grid gap-1">
-                                    {ui.savedDevices.map((device) => (
-                                        <li key={device.id} className="group truncate">
-                                            <div className={`relative rounded-lg ${router.asPath === `/app/device/${device.id}` || openDeviceMenuId === device.id ? `bg-neutral-100 dark:bg-neutral-800` : `hover:bg-neutral-100 dark:hover:bg-neutral-800`}`}>
-                                                <button
-                                                    type="button"
-                                                    className="flex w-full min-w-0 items-center gap-3 truncate rounded-lg p-1.5 pr-10 text-left text-xs font-semibold"
-                                                    onClick={() => handleSavedDeviceNavigate(device)}
-                                                    aria-current={router.asPath === `/app/device/${device.id}` ? "page" : undefined}
-                                                >
-                                                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round" className="!max-h-[16px] !min-h-[16px] !h-[16px] shrink-0 lucide lucide-hard-drive-icon lucide-hard-drive"><path d="M10 16h.01"/><path d="M2.212 11.577a2 2 0 0 0-.212.896V18a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-5.527a2 2 0 0 0-.212-.896L18.55 5.11A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><path d="M21.946 12.013H2.054"/><path d="M6 16h.01"/></svg>
-                                                    {getSavedDeviceStatus(device.id) === "loading" ? (
-                                                        <svg
-                                                            xmlns="http://www.w3.org/2000/svg"
-                                                            width="14"
-                                                            height="14"
-                                                            viewBox="0 0 24 24"
-                                                            fill="none"
-                                                            stroke="currentColor"
-                                                            strokeWidth="2"
-                                                            strokeLinecap="round"
-                                                            strokeLinejoin="round"
-                                                            className="h-3.5 w-3.5 shrink-0 animate-spin text-neutral-500"
-                                                            aria-hidden="true"
-                                                        >
-                                                            <path d="M21 12a9 9 0 1 1-6.219-8.56" />
-                                                        </svg>
-                                                    ) : (
-                                                        <span
-                                                            className={`h-2 w-2 shrink-0 rounded-full ${getSavedDeviceStatusClasses(getSavedDeviceStatus(device.id))}`}
-                                                            aria-hidden="true"
-                                                        />
-                                                    )}
-                                                    <div className="flex min-w-0 flex-col truncate">
-                                                        <span className="truncate">{device.alias || device.name}</span>
-                                                    </div>
-                                                </button>
-                                                <DropdownMenu
-                                                    open={openDeviceMenuId === device.id}
-                                                    onOpenChange={(isOpen) => {
-                                                        setOpenDeviceMenuId(isOpen ? device.id : null);
-                                                    }}
-                                                >
-                                                    <DropdownMenuTrigger asChild>
-                                                        <button
-                                                            type="button"
-                                                            aria-label={`Azioni per ${device.alias || device.name}`}
-                                                            className={`absolute right-1 top-1/2 z-10 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-md text-neutral-400 transition-opacity hover:text-neutral-700 focus-visible:outline-none dark:hover:text-neutral-100 ${openDeviceMenuId === device.id ? `opacity-100` : `opacity-0 group-hover:opacity-100 focus-visible:opacity-100`}`}
-                                                        >
-                                                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg>
-                                                        </button>
-                                                    </DropdownMenuTrigger>
-                                                    <DropdownMenuContent side="right" align="start" className="w-[180px]">
-                                                        <DropdownMenuItem
-                                                            onClick={() => openRenameDeviceDialog(device)}
-                                                            className="cursor-pointer font-semibold !text-xs gap-1"
-                                                        >
-                                                            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="!h-[14px] lucide lucide-square-pen-icon lucide-square-pen"><path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z"/></svg>
-                                                            Rename device
-                                                        </DropdownMenuItem>
-                                                        <DropdownMenuItem
-                                                            onClick={() => openArchiveDeviceDialog(device)}
-                                                            className="cursor-pointer font-semibold !text-xs gap-1"
-                                                        >
-                                                            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="!h-[14px] lucide lucide-archive-icon lucide-archive"><rect width="20" height="5" x="2" y="3" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/></svg>
-                                                            Archivia device
-                                                        </DropdownMenuItem>
-                                                        <DropdownMenuItem
-                                                            onClick={() => openDeleteDeviceDialog(device)}
-                                                            className="cursor-pointer font-semibold text-red-600 focus:text-red-600 !text-xs gap-1"
-                                                        >
-                                                            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="!h-[14px] lucide lucide-trash-icon lucide-trash"><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-                                                            Elimina device
-                                                        </DropdownMenuItem>
-                                                    </DropdownMenuContent>
-                                                </DropdownMenu>
-                                            </div>
-                                        </li>
-                                    ))}
+                                    {regularSavedDevices.map((device) => renderSavedDeviceItem(device))}
                                 </ul>
                             ) : null}
                         </div>{/*

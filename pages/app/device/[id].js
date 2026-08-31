@@ -9,6 +9,7 @@ import {
     DialogTitle,
 } from "@/components/ui/dialog";
 import { setDeviceTerminalOpen } from "@/redux/actions/main";
+import { toast } from "@/hooks/use-toast";
 import { connect } from "react-redux";
 import { useRouter } from "next/router";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -172,15 +173,23 @@ function DevicePage({ setDeviceTerminalOpen }) {
     const { id } = router.query;
     const [device, setDevice] = useState(null);
     const [isLoading, setIsLoading] = useState(true);
+    const [isRestarting, setIsRestarting] = useState(false);
+    const [isRefreshingTerminal, setIsRefreshingTerminal] = useState(false);
+    const [isOpeningLogs, setIsOpeningLogs] = useState(false);
+    const [terminalRefreshKey, setTerminalRefreshKey] = useState(0);
+    const [deviceConnectionState, setDeviceConnectionState] = useState(null);
     const [loadError, setLoadError] = useState("");
     const [terminalError, setTerminalError] = useState("");
     const [availabilityMessage, setAvailabilityMessage] = useState("");
     const [unavailableDevice, setUnavailableDevice] = useState(null);
     const terminalContainerRef = useRef(null);
+    const terminalInstanceRef = useRef(null);
     const deviceRef = useRef(null);
     const deviceConnectionStateRef = useRef(null);
     const deviceAvailabilityMissesRef = useRef(0);
     const hasRedirectedUnavailableRef = useRef(false);
+    const lastTerminalErrorToastRef = useRef("");
+    const lastAvailabilityToastRef = useRef("");
 
     useEffect(() => {
         deviceRef.current = device;
@@ -190,7 +199,104 @@ function DevicePage({ setDeviceTerminalOpen }) {
         deviceAvailabilityMissesRef.current = 0;
         hasRedirectedUnavailableRef.current = false;
         setUnavailableDevice(null);
+        setIsRestarting(false);
+        setIsRefreshingTerminal(false);
+        setIsOpeningLogs(false);
+        setTerminalRefreshKey(0);
+        lastTerminalErrorToastRef.current = "";
+        lastAvailabilityToastRef.current = "";
     }, [device?.id]);
+
+    useEffect(() => {
+        if (!terminalError || lastTerminalErrorToastRef.current === terminalError) {
+            return;
+        }
+
+        lastTerminalErrorToastRef.current = terminalError;
+        toast({
+            title: "Terminal error",
+            description: terminalError,
+            variant: "destructive",
+        });
+    }, [terminalError]);
+
+    useEffect(() => {
+        if (!availabilityMessage || lastAvailabilityToastRef.current === availabilityMessage) {
+            return;
+        }
+
+        lastAvailabilityToastRef.current = availabilityMessage;
+        toast({
+            title: "Terminal",
+            description: availabilityMessage,
+        });
+    }, [availabilityMessage]);
+
+    async function handleRestartDevice() {
+        if (!device?.id || terminalMode !== "ssh" || !window?.electron) {
+            return;
+        }
+
+        setIsRestarting(true);
+
+        try {
+            const wrote = await window.electron.writeDeviceTerminal(device.id, "sudo reboot\n");
+
+            if (!wrote) {
+                throw new Error("SSH session is not ready.");
+            }
+
+            setTerminalError("");
+            setAvailabilityMessage("Reboot command sent to the device.");
+        } finally {
+            setIsRestarting(false);
+        }
+    }
+
+    async function handleRefreshTerminal() {
+        if (!device?.id || terminalMode !== "ssh" || !window?.electron) {
+            return;
+        }
+
+        setIsRefreshingTerminal(true);
+
+        try {
+            if (deviceConnectionStateRef.current?.state === "connected") {
+                terminalInstanceRef.current?.clear?.();
+                await window.electron.writeDeviceTerminal(device.id, "clear\n");
+                setTerminalError("");
+                setAvailabilityMessage("Terminal cleared.");
+                return;
+            }
+
+            setTerminalRefreshKey((value) => value + 1);
+            setTerminalError("");
+            setAvailabilityMessage("Refreshing terminal session...");
+        } finally {
+            setIsRefreshingTerminal(false);
+        }
+    }
+
+    async function handleOpenLogs() {
+        if (!device?.id || terminalMode !== "ssh" || !window?.electron) {
+            return;
+        }
+
+        setIsOpeningLogs(true);
+
+        try {
+            const wrote = await window.electron.writeDeviceTerminal(device.id, "journalctl -f\n");
+
+            if (!wrote) {
+                throw new Error("SSH session is not ready.");
+            }
+
+            setTerminalError("");
+            setAvailabilityMessage("Opening system logs.");
+        } finally {
+            setIsOpeningLogs(false);
+        }
+    }
 
     const terminalMode = useMemo(() => {
         if (
@@ -290,10 +396,12 @@ function DevicePage({ setDeviceTerminalOpen }) {
     useEffect(() => {
         if (!device?.id || !window?.electron?.onDeviceConnectionStatus) {
             deviceConnectionStateRef.current = null;
+            setDeviceConnectionState(null);
             return;
         }
 
         deviceConnectionStateRef.current = null;
+        setDeviceConnectionState(null);
 
         const unsubscribe = window.electron.onDeviceConnectionStatus((payload) => {
             if (payload?.deviceId !== device.id) {
@@ -301,12 +409,14 @@ function DevicePage({ setDeviceTerminalOpen }) {
             }
 
             deviceConnectionStateRef.current = payload;
+            setDeviceConnectionState(payload);
         });
 
         window.electron
             ?.getDeviceConnectionState?.(device.id)
             .then((payload) => {
                 deviceConnectionStateRef.current = payload;
+                setDeviceConnectionState(payload);
             })
             .catch(() => {});
 
@@ -742,6 +852,7 @@ function DevicePage({ setDeviceTerminalOpen }) {
                     background: "#000000",
                 },
             });
+            terminalInstanceRef.current = terminal;
 
             fitAddon = new FitAddon();
             terminal.loadAddon(fitAddon);
@@ -777,6 +888,7 @@ function DevicePage({ setDeviceTerminalOpen }) {
                         ? "[ssh] session closed"
                         : "[serial] session closed"
                 );
+                setIsRestarting(false);
             });
 
             setTerminalError("");
@@ -853,6 +965,7 @@ function DevicePage({ setDeviceTerminalOpen }) {
             if (terminal) {
                 terminal.dispose();
                 terminal = null;
+                terminalInstanceRef.current = null;
                 fitAddon = null;
             }
 
@@ -869,12 +982,65 @@ function DevicePage({ setDeviceTerminalOpen }) {
         isLoading,
         loadError,
         setDeviceTerminalOpen,
+        terminalRefreshKey,
         terminalAvailabilityMessage,
         terminalMode,
     ]);
 
     return (
-        <Layout title={device?.alias || device?.name || <LoadingTitle />}>
+        <Layout
+            title={device?.alias || device?.name || <LoadingTitle />}
+            buttons={
+                terminalMode === "ssh" ? (
+                    <div className="flex items-center gap-2">
+                        <Button
+                            type="button"
+                            onClick={handleOpenLogs}
+                            disabled={
+                                isLoading ||
+                                isRestarting ||
+                                isRefreshingTerminal ||
+                                isOpeningLogs ||
+                                deviceConnectionState?.state !== "connected" ||
+                                !device?.id
+                            }
+                            className="rounded-lg h-7 !font-semibold !text-xs border bg-white hover:bg-neutral-50 text-black dark:text-white dark:bg-neutral-800 dark:border-neutral-700"
+                        >
+                            Open logs
+                        </Button>
+                        <Button
+                            type="button"
+                            onClick={handleRefreshTerminal}
+                            disabled={
+                                isLoading ||
+                                isRestarting ||
+                                isRefreshingTerminal ||
+                                isOpeningLogs ||
+                                !device?.id
+                            }
+                            className="rounded-lg h-7 !font-semibold !text-xs border bg-white hover:bg-neutral-50 text-black dark:text-white dark:bg-neutral-800 dark:border-neutral-700"
+                        >
+                            Refresh terminal
+                        </Button>
+                        <Button
+                            type="button"
+                            onClick={handleRestartDevice}
+                            disabled={
+                                isLoading ||
+                                isRestarting ||
+                                isRefreshingTerminal ||
+                                isOpeningLogs ||
+                                deviceConnectionState?.state !== "connected" ||
+                                !device?.id
+                            }
+                            className="rounded-lg h-7 !font-semibold !text-xs border bg-white hover:bg-neutral-50 text-black dark:text-white dark:bg-neutral-800 dark:border-neutral-700"
+                        >
+                            Restart device
+                        </Button>
+                    </div>
+                ) : null
+            }
+        >
             <div className="h-full overflow-hidden">
                 <div className="relative h-full w-full overflow-hidden border-t bg-black">
                     {loadError ? (
@@ -883,14 +1049,10 @@ function DevicePage({ setDeviceTerminalOpen }) {
                         </div>
                     ) : null}
                     {!loadError && terminalError ? (
-                        <div className="absolute left-3 right-3 top-3 z-10 rounded-md border border-red-900 bg-red-950/40 px-3 py-2 text-xs font-semibold text-red-300">
-                            {terminalError}
-                        </div>
+                        null
                     ) : null}
                     {!loadError && availabilityMessage ? (
-                        <div className="absolute left-3 right-3 top-3 z-10 rounded-md border border-amber-900 bg-amber-950/40 px-3 py-2 text-xs font-semibold text-amber-300">
-                            {availabilityMessage}
-                        </div>
+                        null
                     ) : null}
                     {!loadError && terminalMode ? (
                         <div

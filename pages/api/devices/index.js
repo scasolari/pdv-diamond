@@ -14,9 +14,14 @@ export default async function handler(req, res) {
             where: {
                 archivedAt: showArchived ? { not: null } : null,
             },
-            orderBy: {
-                updatedAt: "desc",
-            },
+            orderBy: [
+                {
+                    pinned: "desc",
+                },
+                {
+                    updatedAt: "desc",
+                },
+            ],
         });
 
         return res.status(200).json(devices);
@@ -54,6 +59,7 @@ export default async function handler(req, res) {
                 mac: payload.mac ?? null,
                 interface: payload.interface ?? null,
                 archivedAt: null,
+                ...(payload.pinned !== undefined ? { pinned: Boolean(payload.pinned) } : {}),
             },
             create: {
                 sourceKey: payload.sourceKey,
@@ -77,6 +83,7 @@ export default async function handler(req, res) {
                 mac: payload.mac ?? null,
                 interface: payload.interface ?? null,
                 archivedAt: null,
+                pinned: Boolean(payload.pinned),
             },
         });
 

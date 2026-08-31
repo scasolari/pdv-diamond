@@ -6,6 +6,7 @@ import {PersistGate} from "redux-persist/integration/react";
 import {store, persistor} from "@/redux";
 import {ThemeProvider, useTheme} from "next-themes";
 import {useEffect, useState} from "react";
+import { Toaster } from "@/components/ui/toaster";
 
 function ElectronThemeSync() {
     const { theme, resolvedTheme, setTheme } = useTheme();
@@ -74,6 +75,7 @@ export default function App({Component, pageProps}) {
             <PersistGate loading={null} persistor={persistor}>
               <ThemeProvider attribute="class" disableTransitionOnChange>
                   <ElectronThemeSync />
+                  <Toaster />
                   <Component {...pageProps} />
                 </ThemeProvider>
             </PersistGate>

@@ -31,26 +31,27 @@ module.exports = {
   },
   win: {
     icon: "build/icon.ico",
+    target: [
+      "nsis",
+    ],
   },
   afterPack: async (context) => {
     const projectDir = context.projectDir || context.packager?.projectDir;
     const appOutDir = context.appOutDir || context.outDir;
     const productFilename =
       context.packager?.appInfo?.productFilename || context.packager?.appInfo?.productName || "Placedv Labs";
-
-    const appBundlePath = path.join(
-      appOutDir,
-      `${productFilename}.app`,
-      "Contents",
-      "Resources",
-    );
+    const platform = context.electronPlatformName || context.packager?.platform?.name || process.platform;
+    const resourcesDir =
+      platform === "darwin"
+        ? path.join(appOutDir, `${productFilename}.app`, "Contents", "Resources")
+        : path.join(appOutDir, "resources");
     const standaloneSource = path.join(projectDir, ".next", "standalone");
-    const standaloneTarget = path.join(appBundlePath, "app-standalone");
+    const standaloneTarget = path.join(resourcesDir, "app-standalone");
     const staticSource = path.join(projectDir, ".next", "static");
     const staticTarget = path.join(standaloneTarget, ".next", "static");
     const publicSource = path.join(projectDir, "public");
     const publicTarget = path.join(standaloneTarget, "public");
-    const prismaRuntimeTarget = path.join(appBundlePath, "prisma-runtime");
+    const prismaRuntimeTarget = path.join(resourcesDir, "prisma-runtime");
     const prismaSchemaSource = path.join(projectDir, "prisma", "schema.prisma");
     const prismaSchemaTarget = path.join(prismaRuntimeTarget, "schema.prisma");
     const prismaMigrationsSource = path.join(projectDir, "prisma", "migrations");

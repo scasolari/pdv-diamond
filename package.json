@@ -7,6 +7,7 @@
     "clean:dist": "node scripts/clean-dist.cjs",
     "dist:mac": "npm run clean:dist && npm run build && electron-builder --mac --config electron-builder.config.cjs",
     "dist:mac:all": "npm run clean:dist && npm run build && electron-builder --mac --arm64 --x64 --config electron-builder.config.cjs",
+    "dist:win": "npm run clean:dist && npm run build && electron-builder --win --x64 --config electron-builder.config.cjs",
     "dev": "cross-env DATABASE_URL=file:./prisma/placedv-local.db next dev",
     "dev:web": "cross-env DATABASE_URL=file:./prisma/placedv-local.db next dev",
     "dev:electron": "concurrently -k \"npm:dev:web\" \"npm:dev:electron:app\"",

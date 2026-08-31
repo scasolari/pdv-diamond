@@ -82,6 +82,7 @@ model SavedDevice {
   mac          String?
   interface    String?
   archivedAt   DateTime?
+  pinned       Boolean   @default(false)
   missions     Mission[]
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt

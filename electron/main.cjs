@@ -413,7 +413,7 @@ async function bootstrapLocalDatabaseWithSqlite(databasePath) {
     "CREATE UNIQUE INDEX IF NOT EXISTS `VerificationToken_token_key` ON `VerificationToken`(`token`);",
     "CREATE UNIQUE INDEX IF NOT EXISTS `VerificationToken_identifier_token_key` ON `VerificationToken`(`identifier`, `token`);",
     "CREATE TABLE IF NOT EXISTS `AppSetting` (`key` TEXT NOT NULL PRIMARY KEY, `value` TEXT NOT NULL, `updatedAt` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP);",
-    "CREATE TABLE IF NOT EXISTS `SavedDevice` (`id` TEXT NOT NULL PRIMARY KEY, `sourceKey` TEXT NOT NULL, `alias` TEXT NOT NULL, `name` TEXT NOT NULL, `baudRate` INTEGER NOT NULL DEFAULT 115200, `transport` TEXT NOT NULL, `type` TEXT NOT NULL, `source` TEXT NOT NULL, `path` TEXT, `address` TEXT, `port` INTEGER, `sshUser` TEXT, `sshPort` INTEGER, `protocol` TEXT, `manufacturer` TEXT, `serialNumber` TEXT, `vendorId` TEXT, `productId` TEXT, `pnpId` TEXT, `mac` TEXT, `interface` TEXT, `archivedAt` DATETIME, `createdAt` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, `updatedAt` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP);",
+    "CREATE TABLE IF NOT EXISTS `SavedDevice` (`id` TEXT NOT NULL PRIMARY KEY, `sourceKey` TEXT NOT NULL, `alias` TEXT NOT NULL, `name` TEXT NOT NULL, `baudRate` INTEGER NOT NULL DEFAULT 115200, `transport` TEXT NOT NULL, `type` TEXT NOT NULL, `source` TEXT NOT NULL, `path` TEXT, `address` TEXT, `port` INTEGER, `sshUser` TEXT, `sshPort` INTEGER, `protocol` TEXT, `manufacturer` TEXT, `serialNumber` TEXT, `vendorId` TEXT, `productId` TEXT, `pnpId` TEXT, `mac` TEXT, `interface` TEXT, `archivedAt` DATETIME, `pinned` INTEGER NOT NULL DEFAULT 0, `createdAt` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, `updatedAt` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP);",
     "CREATE UNIQUE INDEX IF NOT EXISTS `SavedDevice_sourceKey_key` ON `SavedDevice`(`sourceKey`);",
     "CREATE TABLE IF NOT EXISTS `Mission` (`id` TEXT NOT NULL PRIMARY KEY, `name` TEXT NOT NULL, `deviceId` TEXT NOT NULL, `remotePath` TEXT NOT NULL, `entrypoint` TEXT NOT NULL, `notes` TEXT, `filesJson` TEXT NOT NULL DEFAULT '[]', `status` TEXT NOT NULL DEFAULT 'draft', `createdAt` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, `updatedAt` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, CONSTRAINT `Mission_deviceId_fkey` FOREIGN KEY (`deviceId`) REFERENCES `SavedDevice` (`id`) ON DELETE CASCADE ON UPDATE CASCADE);",
     "CREATE INDEX IF NOT EXISTS `Mission_deviceId_idx` ON `Mission`(`deviceId`);",
@@ -423,6 +423,7 @@ async function bootstrapLocalDatabaseWithSqlite(databasePath) {
     "ALTER TABLE `SavedDevice` ADD COLUMN `interface` TEXT;",
     "ALTER TABLE `SavedDevice` ADD COLUMN `sshUser` TEXT;",
     "ALTER TABLE `SavedDevice` ADD COLUMN `sshPort` INTEGER;",
+    "ALTER TABLE `SavedDevice` ADD COLUMN `pinned` INTEGER NOT NULL DEFAULT 0;",
   ];
   let database;
 
@@ -479,7 +480,7 @@ function listSavedNetworkDevicesFromLocalDb() {
   try {
     database = new DatabaseSync(databasePath);
     const statement = database.prepare(
-      "SELECT id, alias, name, address, port, sshUser, sshPort, protocol FROM `SavedDevice` WHERE archivedAt IS NULL AND address IS NOT NULL AND address != ''"
+      "SELECT id, alias, name, address, port, sshUser, sshPort, protocol, pinned FROM `SavedDevice` WHERE archivedAt IS NULL AND address IS NOT NULL AND address != ''"
     );
 
     return statement.all().map((row) => ({
@@ -490,6 +491,7 @@ function listSavedNetworkDevicesFromLocalDb() {
       sshUser: row.sshUser || null,
       sshPort: Number(row.sshPort) || sshDiscoveryPort,
       protocol: row.protocol || "ssh",
+      pinned: Boolean(row.pinned),
       transport: "network",
       type: "network",
       source: "saved",
@@ -519,7 +521,7 @@ function getSavedNetworkDeviceFromLocalDb(deviceId) {
   try {
     database = new DatabaseSync(databasePath);
     const statement = database.prepare(
-      "SELECT id, alias, name, address, port, sshUser, sshPort, protocol FROM `SavedDevice` WHERE id = ? AND archivedAt IS NULL LIMIT 1"
+      "SELECT id, alias, name, address, port, sshUser, sshPort, protocol, pinned FROM `SavedDevice` WHERE id = ? AND archivedAt IS NULL LIMIT 1"
     );
     const row = statement.get(deviceId);
 
@@ -536,6 +538,7 @@ function getSavedNetworkDeviceFromLocalDb(deviceId) {
       sshUser: row.sshUser || null,
       sshPort: Number(row.sshPort) || sshDiscoveryPort,
       protocol: row.protocol || "ssh",
+      pinned: Boolean(row.pinned),
     };
   } catch (error) {
     appendNetworkDiscoveryLog(`saved-network-read-error=${error?.message || String(error)}`);
